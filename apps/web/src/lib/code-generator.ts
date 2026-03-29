@@ -6,6 +6,8 @@
  */
 
 import { PatchOperation } from './patch-engine'
+import type { GenerationStatus } from './types'
+export type { GenerationStatus }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Supported languages and statuses
@@ -23,11 +25,7 @@ export type SupportedLanguage =
   | 'yaml'
   | 'unknown'
 
-export type GenerationStatus =
-  | 'pending_generation'
-  | 'generating'
-  | 'files_written'
-  | 'compile_failed'
+// GenerationStatus re-exported from types.ts (canonical definition there)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Role-to-path configuration

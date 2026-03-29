@@ -87,11 +87,29 @@ export interface Database {
         Insert: Omit<CostModel, 'id' | 'created_at' | 'updated_at'>
         Update: Partial<Omit<CostModel, 'id'>>
       }
+      // ── ERT-P3 migrations 017-019 ─────────────────────────────────────
+      project_files: {
+        Row: ProjectFile
+        Insert: Omit<ProjectFile, 'id' | 'created_at' | 'updated_at'>
+        Update: Partial<Omit<ProjectFile, 'id'>>
+      }
+      file_locks: {
+        Row: FileLock
+        Insert: Omit<FileLock, 'id' | 'acquired_at'>
+        Update: Partial<Omit<FileLock, 'id'>>
+      }
+      generation_events: {
+        Row: GenerationEvent
+        Insert: Omit<GenerationEvent, 'id' | 'occurred_at'>
+        Update: never
+      }
     }
     Views: {
       credentials_safe_view: { Row: CredentialSafe }
     }
-    Functions: {}
+    Functions: {
+      cleanup_expired_file_locks: { Args: Record<never, never>; Returns: number }
+    }
     Enums: {}
   }
 }
@@ -406,4 +424,54 @@ export interface OnboardingAnswers {
   core_outcome: string
   key_features: string
   integrations: string[]
+}
+
+// ─── ERT-P3: Project Files, File Locks, Generation Events (migrations 017-019) ─
+
+export type GenerationStatus =
+  | 'pending_generation'
+  | 'generating'
+  | 'files_written'
+  | 'compile_failed'
+
+export interface ProjectFile {
+  id: string
+  project_id: string
+  file_path: string
+  content: string
+  content_hash: string
+  previous_content: string | null
+  encoding: string
+  language: string | null
+  updated_at: string
+  updated_by_task: string | null
+  created_at: string
+  patch_version: number
+}
+
+export interface FileLock {
+  id: string
+  project_id: string
+  file_path: string
+  task_id: string
+  acquired_at: string
+  expires_at: string
+}
+
+export interface GenerationEvent {
+  id: string
+  project_id: string
+  task_id: string
+  agent_output_id: string
+  status: GenerationStatus
+  files_written: string[]
+  errors: string[]
+  occurred_at: string
+}
+
+// Extended AgentOutput (adds ERT-P3 generation tracking fields)
+export interface AgentOutputGeneration {
+  generation_status: GenerationStatus | null
+  generated_files: string[]
+  generation_errors: string[]
 }
