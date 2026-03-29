@@ -778,10 +778,14 @@ async function postToAgentOutput(
     if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey
     if (secret) headers['X-Buildos-Secret'] = secret
 
+    // PATCH 2026-03-29: Add 45s timeout to prevent the callback fetch from hanging
+    // indefinitely when the output route is slow (e.g. 24 concurrent DB writes).
+    // Without this, postToAgentOutput silently hangs until Vercel kills the function.
     const res = await fetch(callbackUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
     })
 
     if (!res.ok) {
@@ -1028,11 +1032,16 @@ async function runAgentExecution(payload: Record<string, unknown>, BUILDOS_SECRE
     console.log(`[agent/execute] Complete in ${Date.now() - execStart}ms: task=${task_id} success=true cost=$${costUsd}`)
 
   } catch (err: unknown) {
-    clearTimeout(deadlineTimer)
+    // PATCH 2026-03-29 (bug fix): Do NOT clearTimeout(deadlineTimer) here first.
+    // Original bug: clearTimeout was called before postToAgentOutput in the catch block.
+    // If postToAgentOutput also failed (silently), the safety net was already gone —
+    // task_run stayed 'started' forever until supervisor cleanup at t=360s.
+    // Fix: only clear the timer AFTER the failure callback is confirmed sent.
+    // If the failure callback fails too, the 220s deadline timer fires as the last resort.
     const message = err instanceof Error ? err.message : 'Internal server error'
     console.error(`[agent/execute] Fatal error in ${Date.now() - execStart}ms:`, message)
 
-    // Best-effort failure notification
+    // Best-effort failure notification — deadline timer remains active as safety net
     try {
       if (callback_url && task_id && task_run_id) {
         await postToAgentOutput(callback_url, idempotency_key || '', {
@@ -1041,8 +1050,13 @@ async function runAgentExecution(payload: Record<string, unknown>, BUILDOS_SECRE
           success: false, error_message: message,
           cost_usd: 0, model_id: 'error', tokens_used: 0,
         }, BUILDOS_SECRET)
+        // Only cancel the deadline timer once we know the callback landed
+        clearTimeout(deadlineTimer)
       }
-    } catch { /* best-effort */ }
+    } catch {
+      // Failure callback also failed — deadline timer (220s) is now the last resort
+      console.error(`[agent/execute] Failure callback also failed for task=${task_id} — deadline timer is last resort`)
+    }
   }
 }
 
