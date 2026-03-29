@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getPatchEngine, PatchOperation, PatchOperationType } from '@/lib/patch-engine'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ function validateOperations(ops: unknown[]): ValidationError[] {
 async function checkNoOverwritePolicy(
   projectId: string,
   ops: PatchOperation[],
-  supabase: ReturnType<typeof createClient>,
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
 ): Promise<ValidationError[]> {
   const errors: ValidationError[] = []
   const nonCreateOps = ops
@@ -153,7 +153,7 @@ export async function POST(
   { params }: { params: { id: string } },
 ) {
   const projectId = params.id
-  const supabase = createClient()
+  const supabase = await createServerSupabaseClient()
 
   // Auth
   const { data: { user }, error: authError } = await supabase.auth.getUser()

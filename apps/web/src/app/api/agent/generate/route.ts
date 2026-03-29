@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
 
@@ -29,7 +29,7 @@ interface GenerateRequest {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function updateGenerationStatus(
-  supabase: ReturnType<typeof createClient>,
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   agentOutputId: string,
   status: GenerationStatus,
   extra?: Record<string, unknown>,
@@ -45,7 +45,7 @@ async function updateGenerationStatus(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function recordGenerationEvent(
-  supabase: ReturnType<typeof createClient>,
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   projectId: string,
   taskId: string,
   agentOutputId: string,
@@ -69,7 +69,7 @@ async function recordGenerationEvent(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const supabase = createClient()
+  const supabase = await createServerSupabaseClient()
 
   // Auth
   const { data: { user }, error: authError } = await supabase.auth.getUser()
