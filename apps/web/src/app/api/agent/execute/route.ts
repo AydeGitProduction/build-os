@@ -799,7 +799,13 @@ async function postToAgentOutput(
 // Retries up to 2 times on rate limit (429) with exponential backoff: 2s → 5s → 10s.
 // Any other error status throws immediately (no infinite loop).
 
-const RETRY_DELAYS_MS = [2000, 5000, 10000]
+// PATCH 2026-03-29: Reduced from [2000, 5000, 10000] to [1000, 2000, 3000].
+// Root cause: 8 concurrent dispatches hit Anthropic rate limits simultaneously.
+// With 3 retries × (2s+5s+10s) = 51s per task, 8 concurrent tasks could exhaust
+// Vercel's 300s waitUntil lifetime before any callback fires → zero agent_outputs,
+// tasks stuck in 'started', infinite supervisor retry loop.
+// Shorter delays ensure the error callback fires within 120s total.
+const RETRY_DELAYS_MS = [1000, 2000, 3000]
 
 async function callAnthropicWithRetry(
   body: Record<string, unknown>,
@@ -814,7 +820,11 @@ async function callAnthropicWithRetry(
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
 
-    // 240s abort: ensures clean error path before Vercel's 300s maxDuration kill
+    // PATCH 2026-03-29: Reduced from 240s to 90s.
+    // With 3 retry attempts + 6s delays + 90s per attempt = max 276s total.
+    // This guarantees the error callback (postToAgentOutput) fires before Vercel
+    // kills the function at 300s. Previously tasks that hit rate limits on all 3
+    // retries would exceed 300s + never call the callback, leaving task_runs in 'started'.
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -823,7 +833,7 @@ async function callAnthropicWithRetry(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(240_000),
+      signal: AbortSignal.timeout(90_000),
     })
 
     if (res.status !== 429) {
@@ -856,6 +866,21 @@ async function runAgentExecution(payload: Record<string, unknown>, BUILDOS_SECRE
     callback_url,
     idempotency_key,
   } = payload as Record<string, string>
+
+  // PATCH 2026-03-29: Hard execution deadline at 220s.
+  // If the function hasn't completed by 220s, we force the error callback so it fires
+  // before Vercel's 300s maxDuration kills the process silently.
+  // This guarantees task_runs always reach a terminal state (completed/failed)
+  // and never get stuck in 'started' waiting for supervisor cleanup.
+  const HARD_DEADLINE_MS = 220_000
+  const deadlineTimer = setTimeout(() => {
+    console.error(`[agent/execute] HARD DEADLINE hit after ${HARD_DEADLINE_MS}ms for task=${task_id} — forcing error callback`)
+    postToAgentOutput(callback_url, idempotency_key || '', {
+      task_id, task_run_id, agent_role,
+      success: false, error_message: 'Execution deadline exceeded (220s) — Anthropic API too slow or rate limited',
+      cost_usd: 0, model_id: 'timeout', tokens_used: 0,
+    }, BUILDOS_SECRET).catch(() => {})
+  }, HARD_DEADLINE_MS)
 
   try {
     console.log(`[agent/execute] Starting execution: task=${task_id} role=${agent_role} type=${task_type}`)
@@ -999,9 +1024,11 @@ async function runAgentExecution(payload: Record<string, unknown>, BUILDOS_SECRE
       },
     }, BUILDOS_SECRET)
 
+    clearTimeout(deadlineTimer)
     console.log(`[agent/execute] Complete in ${Date.now() - execStart}ms: task=${task_id} success=true cost=$${costUsd}`)
 
   } catch (err: unknown) {
+    clearTimeout(deadlineTimer)
     const message = err instanceof Error ? err.message : 'Internal server error'
     console.error(`[agent/execute] Fatal error in ${Date.now() - execStart}ms:`, message)
 
