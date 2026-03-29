@@ -256,7 +256,7 @@ export function applyPatchToContent(
       return applyAppend(currentContent ?? '', op)
     case 'delete_block':
       if (currentContent === null)
-        throw new PatchEngineError(`File "${op.file_path}" does not exist`, 'FILE_NOT_FOUND`)
+        throw new PatchEngineError(`File "${op.file_path}" does not exist`, 'FILE_NOT_FOUND')
       return applyDeleteBlock(currentContent, op)
   }
 }
