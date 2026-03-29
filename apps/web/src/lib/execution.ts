@@ -122,6 +122,31 @@ export type AuditEventType =
   | 'cost_event_emitted' | 'credential_created' | 'credential_deleted'
   | 'document_created' | 'release_check_run' | 'project_status_changed'
 
+// Map internal event types to DB-constrained values.
+// DB CHECK constraint: action IN ('create','read','update','delete','execute','approve','reject','rotate','lock','unlock')
+// DB CHECK constraint: event_type IN ('TASK_DISPATCHED','TASK_COMPLETED','TASK_FAILED','TASK_BLOCKED',
+//   'QA_VERDICT_ISSUED','RELEASE_APPROVED','RELEASE_DEPLOYED','RELEASE_ROLLED_BACK',
+//   'CREDENTIAL_ACCESS','CREDENTIAL_CREATED','CREDENTIAL_REVOKED','CREDENTIAL_DECRYPT_FAILED',
+//   'KEY_ROTATION','BREAK_GLASS','LOCK_ACQUIRED','LOCK_RELEASED','LOCK_FORCE_RELEASED',
+//   'INTEGRATION_CONNECTED','INTEGRATION_FAILED','COST_ALERT_TRIGGERED',
+//   'USER_ROLE_CHANGED','PROJECT_CREATED','PROJECT_ARCHIVED',
+//   'BLUEPRINT_ACCEPTED','RELEASE_GATE_PASSED','RELEASE_GATE_FAILED')
+const AUDIT_EVENT_MAP: Record<AuditEventType, { dbEvent: string; action: string }> = {
+  task_dispatched:        { dbEvent: 'TASK_DISPATCHED',      action: 'execute' },
+  task_completed:         { dbEvent: 'TASK_COMPLETED',       action: 'update'  },
+  task_failed:            { dbEvent: 'TASK_FAILED',          action: 'update'  },
+  task_blocked:           { dbEvent: 'TASK_BLOCKED',         action: 'update'  },
+  agent_output_received:  { dbEvent: 'TASK_COMPLETED',       action: 'execute' },
+  qa_verdict_submitted:   { dbEvent: 'QA_VERDICT_ISSUED',    action: 'approve' },
+  blocker_created:        { dbEvent: 'TASK_BLOCKED',         action: 'create'  },
+  cost_event_emitted:     { dbEvent: 'COST_ALERT_TRIGGERED', action: 'create'  },
+  credential_created:     { dbEvent: 'CREDENTIAL_CREATED',   action: 'create'  },
+  credential_deleted:     { dbEvent: 'CREDENTIAL_REVOKED',   action: 'delete'  },
+  document_created:       { dbEvent: 'PROJECT_CREATED',      action: 'create'  },
+  release_check_run:      { dbEvent: 'RELEASE_GATE_PASSED',  action: 'execute' },
+  project_status_changed: { dbEvent: 'PROJECT_ARCHIVED',     action: 'update'  },
+}
+
 export async function writeAuditLog(
   admin: SupabaseClient,
   params: {
@@ -136,17 +161,75 @@ export async function writeAuditLog(
     metadata?: Record<string, unknown>
   }
 ) {
-  await admin.rpc('buildos_write_audit_log', {
-    p_event_type: params.event_type,
-    p_actor_user_id: params.actor_user_id || null,
-    p_actor_agent_role: params.actor_agent_role || null,
-    p_project_id: params.project_id || null,
-    p_resource_type: params.resource_type,
-    p_resource_id: params.resource_id,
-    p_old_value: params.old_value ? JSON.stringify(params.old_value) : null,
-    p_new_value: params.new_value ? JSON.stringify(params.new_value) : null,
-    p_metadata: params.metadata ? JSON.stringify(params.metadata) : null,
-  })
+  try {
+    // Resolve workspace_id and organization_id from project
+    // DB function requires both as non-nullable UUIDs
+    let workspace_id: string | null = null
+    let organization_id: string | null = null
+
+    if (params.project_id) {
+      const { data: project } = await admin
+        .from('projects')
+        .select('workspace_id')
+        .eq('id', params.project_id)
+        .single()
+      if (project?.workspace_id) {
+        workspace_id = project.workspace_id
+        const { data: workspace } = await admin
+          .from('workspaces')
+          .select('organization_id')
+          .eq('id', workspace_id)
+          .single()
+        if (workspace?.organization_id) {
+          organization_id = workspace.organization_id
+        }
+      }
+    }
+
+    // Fall back to first available workspace/org if project lookup failed
+    if (!workspace_id || !organization_id) {
+      const { data: ws } = await admin
+        .from('workspaces')
+        .select('id, organization_id')
+        .limit(1)
+        .single()
+      workspace_id = ws?.id ?? null
+      organization_id = ws?.organization_id ?? null
+    }
+
+    if (!workspace_id || !organization_id) {
+      // Cannot write audit log without org/workspace context — skip silently
+      return
+    }
+
+    // Resolve actor_id and actor_type from the legacy params
+    const actor_id = params.actor_user_id || params.actor_agent_role || 'system'
+    const actor_type = params.actor_user_id ? 'user' : params.actor_agent_role ? 'agent' : 'system'
+
+    const mapped = AUDIT_EVENT_MAP[params.event_type] ?? { dbEvent: 'TASK_COMPLETED', action: 'execute' }
+
+    const { error } = await admin.rpc('buildos_write_audit_log', {
+      p_organization_id: organization_id,
+      p_workspace_id: workspace_id,
+      p_project_id: params.project_id || null,
+      p_actor_id: actor_id,
+      p_actor_type: actor_type,
+      p_event_type: mapped.dbEvent,
+      p_resource_type: params.resource_type,
+      p_resource_id: params.resource_id,
+      p_action: mapped.action,
+      p_before_state: params.old_value ?? null,
+      p_after_state: params.new_value ?? null,
+      p_metadata: params.metadata ?? {},
+    })
+
+    if (error) {
+      console.error('[writeAuditLog] RPC error:', error.message)
+    }
+  } catch (err) {
+    // Audit log is non-fatal — never let it crash the caller
+    console.error('[writeAuditLog] Unexpected error:', err)
+  }
 }
 
 // ─── Agent Output Schema Validation ──────────────────────────────────────────
