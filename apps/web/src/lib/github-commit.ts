@@ -115,7 +115,14 @@ async function getInstallationToken(appId: string, installationId: string, priva
 export async function commitFilesToGitHub(
   files: CommitFile[],
   commitMessage: string,
+  /** Optional path prefix to prepend to all file paths before committing.
+   *  Use when project_files stores normalised paths (e.g. src/lib/foo.ts)
+   *  but the repo has them under a monorepo workspace (e.g. apps/web/src/lib/foo.ts).
+   *  Falls back to GITHUB_REPO_PATH_PREFIX env var if not provided.
+   */
+  pathPrefix?: string,
 ): Promise<CommitResult> {
+  const prefix = pathPrefix ?? process.env.GITHUB_REPO_PATH_PREFIX ?? ''
   // ── 1. Config validation ───────────────────────────────────────────────────
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
@@ -163,7 +170,7 @@ export async function commitFilesToGitHub(
 
     // ── 4. Create new tree ────────────────────────────────────────────────────
     const treeItems = files.map(f => ({
-      path: f.path,
+      path: prefix ? `${prefix}${f.path}` : f.path,
       mode: '100644',
       type: 'blob',
       content: f.content,
