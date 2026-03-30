@@ -141,7 +141,9 @@ async function getInstallationToken(
 async function resolveGitHubToken(): Promise<string> {
   const appId = process.env.GITHUB_APP_ID;
   const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-  const installationId = process.env.GITHUB_INSTALLATION_ID;
+  // Support both GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
+  const installationId =
+    process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID;
 
   if (appId && privateKey && installationId) {
     // Normalize PEM: env vars often have literal \n instead of actual newlines
@@ -157,7 +159,7 @@ async function resolveGitHubToken(): Promise<string> {
 
   throw new GitHubAuthError(
     "[github-provision] No GitHub credentials configured. " +
-      "Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY + GITHUB_INSTALLATION_ID " +
+      "Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY + GITHUB_APP_INSTALLATION_ID " +
       "or GITHUB_TOKEN.",
     401
   );
@@ -217,10 +219,11 @@ async function withRetry<T>(
 export async function provisionGitHubRepo(
   project: GitHubProvisionInput
 ): Promise<GitHubRepoInfo> {
-  const org = process.env.GITHUB_ORG;
+  // Support GITHUB_ORG (preferred), GITHUB_REPO_OWNER (legacy name in Vercel env)
+  const org = process.env.GITHUB_ORG ?? process.env.GITHUB_REPO_OWNER;
   if (!org) {
     throw new GitHubProvisionError(
-      "[github-provision] GITHUB_ORG environment variable is not set."
+      "[github-provision] GITHUB_ORG (or GITHUB_REPO_OWNER) environment variable is not set."
     );
   }
 
