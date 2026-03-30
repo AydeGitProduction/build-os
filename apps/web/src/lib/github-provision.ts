@@ -17,8 +17,7 @@
 //   GITHUB_TOKEN            — PAT with repo + admin:org scope
 //   GITHUB_ORG              — Org / user where repos are created
 
-import { createPrivateKey } from "crypto";
-import { SignJWT } from "jose";
+import jwt from "jsonwebtoken";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,22 +69,19 @@ export class GitHubProvisionError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * Generates a GitHub App JWT using RS256 via jose library.
+ * Generates a GitHub App JWT using RS256 via jsonwebtoken.
  * The JWT is valid for 9 minutes (GitHub allows max 10m).
  */
-async function generateAppJWT(appId: string, privateKeyPem: string): Promise<string> {
-  // createPrivateKey handles both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
-  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) PEM formats.
-  // GitHub App private keys are PKCS#1 by default; jose's importPKCS8 only
-  // accepts PKCS#8, so we use Node's createPrivateKey instead.
-  const privateKey = createPrivateKey(privateKeyPem);
+function generateAppJWT(appId: string, privateKeyPem: string): string {
+  // jsonwebtoken handles PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
+  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) PEM formats reliably
+  // across all Node.js / OpenSSL versions including OpenSSL 3.x.
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "RS256" })
-    .setIssuedAt(now - 60)          // 60s clock skew buffer
-    .setExpirationTime(now + 9 * 60) // 9 minutes
-    .setIssuer(appId)
-    .sign(privateKey);
+  return jwt.sign(
+    { iat: now - 60, exp: now + 9 * 60, iss: appId },
+    privateKeyPem,
+    { algorithm: "RS256" }
+  );
 }
 
 /**
@@ -96,14 +92,14 @@ async function getInstallationToken(
   privateKeyPem: string,
   installationId: string
 ): Promise<string> {
-  const jwt = await generateAppJWT(appId, privateKeyPem);
+  const jwtToken = generateAppJWT(appId, privateKeyPem);
 
   const response = await fetch(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${jwt}`,
+        Authorization: `Bearer ${jwtToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
       },
