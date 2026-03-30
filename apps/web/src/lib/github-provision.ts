@@ -17,7 +17,8 @@
 //   GITHUB_TOKEN            — PAT with repo + admin:org scope
 //   GITHUB_ORG              — Org / user where repos are created
 
-import { importPKCS8, SignJWT } from "jose";
+import { createPrivateKey } from "crypto";
+import { SignJWT } from "jose";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,7 +74,11 @@ export class GitHubProvisionError extends Error {
  * The JWT is valid for 9 minutes (GitHub allows max 10m).
  */
 async function generateAppJWT(appId: string, privateKeyPem: string): Promise<string> {
-  const privateKey = await importPKCS8(privateKeyPem, "RS256");
+  // createPrivateKey handles both PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
+  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) PEM formats.
+  // GitHub App private keys are PKCS#1 by default; jose's importPKCS8 only
+  // accepts PKCS#8, so we use Node's createPrivateKey instead.
+  const privateKey = createPrivateKey(privateKeyPem);
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({})
     .setProtectedHeader({ alg: "RS256" })
