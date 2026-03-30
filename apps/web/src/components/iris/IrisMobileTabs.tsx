@@ -17,6 +17,7 @@ interface IrisMobileTabsProps {
   readiness: number
   previewData: IrisPreviewData | null
   isBuilding: boolean
+  onAssumptionAction?: (id: string, action: 'accepted' | 'rejected' | 'modified', newValue?: string) => void
 }
 
 const TABS: Array<{ id: Tab; label: string; icon: string }> = [
@@ -34,6 +35,7 @@ export function IrisMobileTabs({
   readiness,
   previewData,
   isBuilding,
+  onAssumptionAction,
 }: IrisMobileTabsProps) {
   const startXRef = useRef<number | null>(null)
   const tabOrder: Tab[] = ['chat', 'preview', 'plan']
@@ -87,6 +89,7 @@ export function IrisMobileTabs({
             data={previewData}
             readiness={readiness}
             isBuilding={isBuilding}
+            onAssumptionAction={onAssumptionAction}
           />
         )}
         {activeTab === 'plan' && (

@@ -9,11 +9,12 @@ interface IrisPreviewPanelProps {
   data: IrisPreviewData | null
   readiness: number
   isBuilding: boolean
+  onAssumptionAction?: (id: string, action: 'accepted' | 'rejected' | 'modified', newValue?: string) => void
 }
 
 type PreviewState = 'EMPTY' | 'BUILDING' | 'PREVIEW'
 
-export function IrisPreviewPanel({ data, readiness, isBuilding }: IrisPreviewPanelProps) {
+export function IrisPreviewPanel({ data, readiness, isBuilding, onAssumptionAction }: IrisPreviewPanelProps) {
   const [state, setState] = useState<PreviewState>('EMPTY')
   const [highlightKey, setHighlightKey] = useState(0)
   const prevDataRef = useRef<IrisPreviewData | null>(null)
@@ -96,7 +97,7 @@ export function IrisPreviewPanel({ data, readiness, isBuilding }: IrisPreviewPan
 
           {/* Assumption cards */}
           {data.assumptions.length > 0 && (
-            <IrisAssumptionCards assumptions={data.assumptions} />
+            <IrisAssumptionCards assumptions={data.assumptions} onAction={onAssumptionAction} />
           )}
         </div>
       )}
