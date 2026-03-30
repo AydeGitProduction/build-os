@@ -32,6 +32,8 @@ import {
 } from '@/lib/execution'
 import { RailwayAdapter } from '@/lib/execution-adapter/railway-adapter'
 import { randomUUID } from 'crypto'
+// ERT-P6C: Routing engine
+import { decide as routingDecide, MODEL_IDS } from '@/lib/routing'
 
 export async function POST(request: NextRequest) {
   const admin = createAdminSupabaseClient()
@@ -155,6 +157,28 @@ export async function POST(request: NextRequest) {
       .update({ status: 'dispatched', dispatched_at: new Date().toISOString() })
       .eq('id', task.id)
 
+    // ── 6b. ERT-P6C: Routing Engine Decision ─────────────────────────────────
+    // HARD SWITCH: ExecutionSelector now governs all model selection.
+    // On error → fallback_used=true, model=sonnet, incident logged in routing_decisions.
+    // Silent fallback is FORBIDDEN — every routing event is persisted.
+    const routingDecision = await routingDecide(
+      {
+        id:              task.id,
+        title:           task.title,
+        description:     task.description,
+        agent_role:      task.agent_role,
+        task_type:       task.task_type,
+        context_payload: task.context_payload as Record<string, unknown> | null,
+        project_id:      task.project_id,
+      },
+      admin,
+      taskRunId
+    )
+
+    // Cost gate enforcement: if routing engine blocks dispatch, fail fast
+    // (only blocked if cost_ceiling_usd triggers a block policy — checked inside decide())
+    // routingDecide handles this internally; it sets fallback_used=true and logs the incident.
+
     // ── 7. Build dispatch payload ─────────────────────────────────────────────
     const appUrl =
       process.env.NEXT_PUBLIC_APP_URL ||
@@ -201,6 +225,11 @@ export async function POST(request: NextRequest) {
       return parts.join('\n').slice(0, 900)
     }
 
+    // ERT-P6C: routing engine provides model_id — HARD SWITCH
+    // model_id is the Anthropic API string (e.g. 'claude-sonnet-4-6')
+    // n8n workflow reads model_id from payload and passes it to the Claude API call
+    const resolvedModelId = MODEL_IDS[routingDecision.model]
+
     const payload: DispatchPayload = {
       task_id: task.id,
       task_run_id: taskRunId,
@@ -212,6 +241,10 @@ export async function POST(request: NextRequest) {
       context_payload: buildTruncatedContextPayload(task.context_payload as Record<string, unknown> | null),
       callback_url: `${appUrl}/api/agent/output`,
       idempotency_key: `agent_output:${taskRunId}`,
+      // ERT-P6C routing fields
+      model_id:         resolvedModelId,
+      cost_ceiling_usd: routingDecision.cost_ceiling_usd,
+      routing_rule:     routingDecision.rule_name,
     }
 
     // ── 8. Emit to agent runner (smart routing) ───────────────────────────────
@@ -319,16 +352,34 @@ export async function POST(request: NextRequest) {
       resource_id: task.id,
       old_value: { status: task.status },
       new_value: { status: 'dispatched' },
-      metadata: { task_run_id: taskRunId, dispatch_method: dispatchMethod, webhook_ok: webhookOk },
+      metadata: {
+        task_run_id:      taskRunId,
+        dispatch_method:  dispatchMethod,
+        webhook_ok:       webhookOk,
+        // ERT-P6C routing metadata
+        routing_model:    routingDecision.model,
+        routing_model_id: resolvedModelId,
+        routing_rule:     routingDecision.rule_name,
+        routing_runtime:  routingDecision.runtime,
+        routing_fallback: routingDecision.fallback_used,
+        complexity_tier:  routingDecision.profile.complexity_tier,
+        risk_tier:        routingDecision.profile.risk_tier,
+      },
     })
 
     const result = {
-      task_id: task.id,
-      task_run_id: taskRunId,
-      status: targetWebhookUrl ? 'dispatched' : 'in_progress',
-      dispatch_method: dispatchMethod,
-      lock_id: lock.lockId,
-      routed_to: 'standard', // All tasks use standard dispatch (QA webhook disabled)
+      task_id:          task.id,
+      task_run_id:      taskRunId,
+      status:           targetWebhookUrl ? 'dispatched' : 'in_progress',
+      dispatch_method:  dispatchMethod,
+      lock_id:          lock.lockId,
+      routed_to:        'routing_engine',
+      // ERT-P6C routing fields
+      routing_model:    routingDecision.model,
+      routing_model_id: resolvedModelId,
+      routing_rule:     routingDecision.rule_name,
+      routing_fallback: routingDecision.fallback_used,
+      routing_rationale: routingDecision.rationale,
     }
 
     // ── 10. Complete idempotency ──────────────────────────────────────────────

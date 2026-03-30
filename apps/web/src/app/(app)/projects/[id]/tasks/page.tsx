@@ -35,7 +35,7 @@ export default async function TasksPage({ params }: Props) {
   const { data: epics } = await supabase
     .from('epics')
     .select(`
-      id, title, slug, sequence,
+      id, title, slug, order_index,
       features(
         id, title, slug,
         tasks(
@@ -45,7 +45,7 @@ export default async function TasksPage({ params }: Props) {
       )
     `)
     .eq('project_id', params.id)
-    .order('sequence')
+    .order('order_index')
 
   // Flatten tasks with epic/feature context
   const tasks = (epics || []).flatMap((epic: any) =>

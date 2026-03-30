@@ -18,6 +18,8 @@ interface IrisMobileTabsProps {
   previewData: IrisPreviewData | null
   isBuilding: boolean
   onAssumptionAction?: (id: string, action: 'accepted' | 'rejected' | 'modified', newValue?: string) => void
+  onConfirm?: () => void
+  isConfirming?: boolean
 }
 
 const TABS: Array<{ id: Tab; label: string; icon: string }> = [
@@ -36,6 +38,8 @@ export function IrisMobileTabs({
   previewData,
   isBuilding,
   onAssumptionAction,
+  onConfirm,
+  isConfirming,
 }: IrisMobileTabsProps) {
   const startXRef = useRef<number | null>(null)
   const tabOrder: Tab[] = ['chat', 'preview', 'plan']
@@ -90,6 +94,8 @@ export function IrisMobileTabs({
             readiness={readiness}
             isBuilding={isBuilding}
             onAssumptionAction={onAssumptionAction}
+            onConfirm={onConfirm}
+            isConfirming={isConfirming}
           />
         )}
         {activeTab === 'plan' && (

@@ -339,6 +339,10 @@ export interface DispatchPayload {
   context_payload: unknown
   callback_url: string
   idempotency_key: string
+  // ERT-P6C: Routing engine fields (optional — fallback to n8n default if absent)
+  model_id?: string          // Anthropic model string e.g. 'claude-sonnet-4-6'
+  cost_ceiling_usd?: number  // Max spend allowed for this task run
+  routing_rule?: string      // Name of matched routing rule (for n8n logging)
 }
 
 export async function emitToN8n(

@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: [],
+    serverComponentsExternalPackages: ['pg', 'pg-native'],
   },
   // TypeScript 'never' errors are pre-existing and caused by missing Supabase
   // database.types.ts (cannot be generated without a live Supabase project

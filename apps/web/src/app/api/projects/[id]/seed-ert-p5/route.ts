@@ -92,6 +92,7 @@ export async function POST(
         .insert({
           project_id:  projectId,
           title:       epicDef.title,
+          slug:        epicDef.title.toLowerCase().replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-').replace(/^-+|-+$/g,'').substring(0,60)+'-'+Math.random().toString(36).slice(2,10),
           description: epicDef.description,
           status:      'pending',
           order_index: baseOrderIndex + epicDef.order_index,
@@ -112,6 +113,7 @@ export async function POST(
             epic_id:     epicRow.id,
             project_id:  projectId,
             title:       featDef.title,
+            slug:        featDef.title.toLowerCase().replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-').replace(/^-+|-+$/g,'').substring(0,60)+'-'+Math.random().toString(36).slice(2,10),
             description: featDef.description,
             status:      'pending',
             priority:    featDef.priority,
@@ -131,6 +133,7 @@ export async function POST(
           feature_id:         featRow.id,
           project_id:         projectId,
           title:              taskDef.title,
+          slug:               taskDef.title.toLowerCase().replace(/[^\w\s-]/g,'').replace(/[\s_]+/g,'-').replace(/^-+|-+$/g,'').substring(0,60)+'-'+Math.random().toString(36).slice(2,10),
           description:        taskDef.description,
           agent_role:         taskDef.agent_role,
           task_type:          taskDef.task_type,

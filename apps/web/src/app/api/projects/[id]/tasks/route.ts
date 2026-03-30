@@ -192,16 +192,18 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
   let epicSeq = 1
 
   for (const epic of executionPlan) {
-    const epicSlug = (epic.title || epic.name || '').toLowerCase()
+    const epicSlug = ((epic.title || epic.name || '').toLowerCase()
       .replace(/[^\w\s-]/g, '')
       .replace(/[\s_]+/g, '-')
       .replace(/^-+|-+$/g, '')
+      .substring(0, 60) || 'epic') + '-' + Math.random().toString(36).slice(2, 10)
 
     const { data: epicRow, error: epicError } = await supabase
       .from('epics')
       .insert({
         project_id: projectId,
         title: epic.title || epic.name,
+        slug: epicSlug,
         description: epic.description || null,
         status: 'pending',
         order_index: epicSeq++,
@@ -215,10 +217,11 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
     let featureSeq = 1
 
     for (const feature of (epic.features || [])) {
-      const featureSlug = (feature.title || feature.name || '').toLowerCase()
+      const featureSlug = ((feature.title || feature.name || '').toLowerCase()
         .replace(/[^\w\s-]/g, '')
         .replace(/[\s_]+/g, '-')
         .replace(/^-+|-+$/g, '')
+        .substring(0, 60) || 'feature') + '-' + Math.random().toString(36).slice(2, 10)
 
       const { data: featureRow, error: featError } = await supabase
         .from('features')
@@ -226,6 +229,7 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
           epic_id: epicRow.id,
           project_id: projectId,
           title: feature.title || feature.name,
+          slug: featureSlug,
           description: feature.description || null,
           status: 'pending',
           priority: 'medium',
@@ -237,15 +241,17 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
       if (featError) throw featError
 
       const taskRows = (feature.tasks || []).map((task: any, idx: number) => {
-        const taskSlug = (task.title || task.name || '').toLowerCase()
+        const taskSlug = ((task.title || task.name || '').toLowerCase()
           .replace(/[^\w\s-]/g, '')
           .replace(/[\s_]+/g, '-')
           .replace(/^-+|-+$/g, '')
+          .substring(0, 60) || 'task') + '-' + Math.random().toString(36).slice(2, 10)
 
         return {
           feature_id: featureRow.id,
           project_id: projectId,
           title: task.title || task.name,
+          slug: taskSlug,
           description: task.description || null,
           agent_role: task.agent_role || 'backend_engineer',
           priority: task.priority || 'medium',
