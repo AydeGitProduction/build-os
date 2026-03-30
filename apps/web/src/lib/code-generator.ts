@@ -309,11 +309,90 @@ export interface GenerationServiceInput {
   existingFilePaths?: string[]
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// JSON file-list fallback extractor
+// ─────────────────────────────────────────────────────────────────────────────
+// When agents return JSON (current default prompt), attempt to extract file
+// operations from common JSON schemas produced by code agents.
+// Handles: { files: [{path, content}] }, { code: { files: [] } }, [{file_path, content}]
+
+interface JsonFileEntry {
+  path?: string
+  file_path?: string
+  filePath?: string
+  content?: string
+  code?: string
+  body?: string
+  operation?: string
+}
+
+function tryExtractCodeBlocksFromJson(rawOutput: string): ExtractedCodeBlock[] {
+  // First unwrap {content, format:'markdown'} wrapper from n8n parse step
+  let text = rawOutput
+  try {
+    const outer = JSON.parse(rawOutput)
+    if (outer && typeof outer === 'object' && !Array.isArray(outer)) {
+      if (typeof outer.content === 'string') {
+        // n8n wrapped markdown: inner text may have code blocks
+        const innerBlocks = extractCodeBlocks(outer.content)
+        if (innerBlocks.length > 0) return innerBlocks
+        // Otherwise fall through and try to parse inner content as JSON
+        text = outer.content
+      }
+    }
+  } catch { /* not JSON — leave text as-is */ }
+
+  // Try to parse the (possibly unwrapped) text as JSON file list
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { return [] }
+
+  const entries: JsonFileEntry[] = []
+
+  if (Array.isArray(parsed)) {
+    entries.push(...(parsed as JsonFileEntry[]))
+  } else if (parsed && typeof parsed === 'object') {
+    const obj = parsed as Record<string, unknown>
+    // { files: [...] } or { code: { files: [...] } }
+    const files = obj.files ?? (obj.code as Record<string, unknown> | null)?.files
+    if (Array.isArray(files)) entries.push(...(files as JsonFileEntry[]))
+    // { "src/lib/foo.ts": "content" }
+    else {
+      for (const [key, val] of Object.entries(obj)) {
+        if (typeof val === 'string' && key.includes('/') && key.includes('.')) {
+          entries.push({ path: key, content: val })
+        }
+      }
+    }
+  }
+
+  return entries
+    .map((e, i): ExtractedCodeBlock | null => {
+      const filePath = e.path ?? e.file_path ?? e.filePath
+      const content = e.content ?? e.code ?? e.body
+      if (!filePath || !content) return null
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      const lang = normalizeLanguage(ext)
+      return {
+        language: lang,
+        code: `// ${filePath}\n${content}`,
+        filename: filePath,
+        startLine: i * 10,
+        endLine: i * 10 + 5,
+      }
+    })
+    .filter((b): b is ExtractedCodeBlock => b !== null)
+}
+
 export function parseAgentOutputToOperations(input: GenerationServiceInput): CodeGenerationOutput {
   const { rawAgentOutput, agentRole, existingFilePaths = [] } = input
   const existingSet = new Set(existingFilePaths)
 
-  const blocks = extractCodeBlocks(rawAgentOutput)
+  // Try code blocks first; fall back to JSON file-list extraction
+  let blocks = extractCodeBlocks(rawAgentOutput)
+  if (blocks.length === 0) {
+    blocks = tryExtractCodeBlocksFromJson(rawAgentOutput)
+  }
+
   const operations: PatchOperation[] = []
   const targetFiles: string[] = []
   const allErrors: string[] = []

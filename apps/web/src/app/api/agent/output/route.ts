@@ -461,6 +461,33 @@ export async function POST(request: NextRequest) {
       } catch {
         // Non-fatal: loop continuation failure should never block the output response
       }
+
+      // c) P0 CODE GENERATION — fire-and-forget call to /api/agent/generate
+      // Triggers for code/schema/test task types. Uses raw_text from the agent_output
+      // we just wrote. Non-fatal if it fails.
+      // This path fires even if n8n workflow hasn't been updated to include the
+      // generate step — it ensures generated_files != [] for ALL code-type tasks.
+      const CODE_TASK_TYPES = ['code', 'schema', 'test']
+      if (agentOutput?.id && CODE_TASK_TYPES.includes(task.task_type || '')) {
+        const rawOutputText = agentOutput.raw_text || (output ? JSON.stringify(output) : '')
+        fetch(`${baseUrl}/api/agent/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Buildos-Secret': BUILDOS_SECRET,
+          },
+          body: JSON.stringify({
+            project_id: task.project_id,
+            task_id,
+            agent_output_id: agentOutput.id,
+            agent_role: agent_role || task.agent_role,
+            raw_output: rawOutputText,
+          }),
+        }).catch((err) => {
+          console.warn(`[agent/output] generate call failed for task ${task_id} (non-fatal):`, err)
+        })
+        console.log(`[agent/output] Code generation triggered for task ${task_id} (type: ${task.task_type})`)
+      }
     }
 
     return NextResponse.json({ data: result }, { status: 201 })
