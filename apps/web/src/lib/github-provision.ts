@@ -17,7 +17,7 @@
 //   GITHUB_TOKEN            — PAT with repo + admin:org scope
 //   GITHUB_ORG              — Org / user where repos are created
 
-import * as crypto from "crypto";
+import { importPKCS8, SignJWT } from "jose";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,27 +69,18 @@ export class GitHubProvisionError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * Generates a GitHub App JWT using RS256.
- * The JWT is valid for 10 minutes (GitHub allows max 10m).
+ * Generates a GitHub App JWT using RS256 via jose library.
+ * The JWT is valid for 9 minutes (GitHub allows max 10m).
  */
 async function generateAppJWT(appId: string, privateKeyPem: string): Promise<string> {
+  const privateKey = await importPKCS8(privateKeyPem, "RS256");
   const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iat: now - 60,          // issued 60s ago (clock skew buffer)
-    exp: now + 9 * 60,      // expires in 9 minutes
-    iss: appId,
-  };
-
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const signingInput = `${header}.${body}`;
-
-  const sign = crypto.createSign("SHA256");
-  sign.update(signingInput);
-  sign.end();
-
-  const signature = sign.sign(privateKeyPem, "base64url");
-  return `${signingInput}.${signature}`;
+  return new SignJWT({})
+    .setProtectedHeader({ alg: "RS256" })
+    .setIssuedAt(now - 60)          // 60s clock skew buffer
+    .setExpirationTime(now + 9 * 60) // 9 minutes
+    .setIssuer(appId)
+    .sign(privateKey);
 }
 
 /**
