@@ -88,7 +88,19 @@ function normalizePrivateKeyPem(raw: string): string {
     return pem.replace(/\r\n/g, "\n");
   }
 
-  // Step 3: Key is bare base64 without headers — wrap as PKCS#1 RSA private key
+  // Step 3: Try base64 decoding — the entire PEM may have been base64-encoded
+  // (this is the case when Vercel stores the key as b64(pemFile))
+  try {
+    const decoded = Buffer.from(pem.replace(/\s/g, ""), "base64").toString("utf8");
+    if (decoded.includes("-----BEGIN")) {
+      console.log("[github-provision] Key was base64-encoded PEM, decoded successfully.");
+      return decoded.replace(/\r\n/g, "\n").trim();
+    }
+  } catch {
+    // not valid base64 — fall through
+  }
+
+  // Step 4: Key is bare base64 without headers — wrap as PKCS#1 RSA private key
   // (GitHub App keys are always PKCS#1 RSA format)
   console.warn(
     "[github-provision] GITHUB_APP_PRIVATE_KEY lacks PEM headers — " +
