@@ -30,6 +30,7 @@ import {
   isValidTransition,
   type DispatchPayload,
 } from '@/lib/execution'
+import { RailwayAdapter } from '@/lib/execution-adapter/railway-adapter'
 import { randomUUID } from 'crypto'
 
 export async function POST(request: NextRequest) {
@@ -272,6 +273,32 @@ export async function POST(request: NextRequest) {
       // Mock mode: auto-advance task to in_progress (for dev/demo purposes)
       await admin.from('tasks').update({ status: 'in_progress' }).eq('id', task.id)
       await admin.from('task_runs').update({ status: 'running' }).eq('id', taskRunId)
+    }
+
+    // ── 8b. Shadow dispatch to Railway (ERT-P6A) ─────────────────────────────
+    // When SHADOW_MODE=true: also dispatch to Railway job_queue in parallel.
+    // This is FIRE-AND-FORGET — Railway failure never affects the primary path.
+    // Vercel/n8n result remains authoritative.
+    if (process.env.SHADOW_MODE === 'true') {
+      const railwayPayload = {
+        correlation_id: randomUUID(),
+        task_id: payload.task_id,
+        task_run_id: payload.task_run_id,
+        feature_id: (task.feature_id as string | null) ?? null,
+        project_id: payload.project_id,
+        agent_role: payload.agent_role,
+        task_type: payload.task_type,
+        task_name: payload.task_name,
+        description: payload.description,
+        context_payload: payload.context_payload as Record<string, unknown>,
+        callback_url: payload.callback_url,
+        idempotency_key: `shadow:railway:${taskRunId}`,
+        retry_count: 0,
+      }
+      new RailwayAdapter().dispatch(railwayPayload).catch(err =>
+        console.warn('[dispatch/task] Shadow Railway dispatch failed (non-fatal):', err)
+      )
+      console.log(`[dispatch/task] Shadow dispatch queued for task=${task.id}`)
     }
 
     // ── 9. Audit log ──────────────────────────────────────────────────────────
