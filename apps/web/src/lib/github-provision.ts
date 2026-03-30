@@ -17,7 +17,7 @@
 //   GITHUB_TOKEN            — PAT with repo + admin:org scope
 //   GITHUB_ORG              — Org / user where repos are created
 
-import jwt from "jsonwebtoken";
+import { createPrivateKey, sign as cryptoSign } from "crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,14 +104,48 @@ function normalizePrivateKeyPem(raw: string): string {
   ].join("\n");
 }
 
+/**
+ * Loads a private key from a PEM string, handling OpenSSL 3.x compatibility.
+ *
+ * Node.js 18+ (OpenSSL 3) dropped PKCS#1 PEM loading from the default
+ * provider. We work around this by:
+ *   1. Trying to load the PEM string directly (works on OpenSSL 1.x / Node 16)
+ *   2. On failure, extracting DER bytes and using createPrivateKey with an
+ *      explicit type — { format: 'der', type: 'pkcs1' } works on OpenSSL 3.
+ */
+function loadPrivateKey(normalizedPem: string) {
+  try {
+    return createPrivateKey(normalizedPem);
+  } catch {
+    // Fallback: strip PEM headers, base64-decode to DER, load with explicit type
+    const b64 = normalizedPem
+      .replace(/-----BEGIN[^-]+-----/g, "")
+      .replace(/-----END[^-]+-----/g, "")
+      .replace(/\s/g, "");
+    const der = Buffer.from(b64, "base64");
+
+    // Try PKCS#1 first (GitHub App keys), then PKCS#8
+    try {
+      return createPrivateKey({ key: der, format: "der", type: "pkcs1" });
+    } catch {
+      return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+    }
+  }
+}
+
 function generateAppJWT(appId: string, privateKeyPem: string): string {
   const normalizedPem = normalizePrivateKeyPem(privateKeyPem);
+  const privateKey = loadPrivateKey(normalizedPem);
+
   const now = Math.floor(Date.now() / 1000);
-  return jwt.sign(
-    { iat: now - 60, exp: now + 9 * 60, iss: appId },
-    normalizedPem,
-    { algorithm: "RS256" }
-  );
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ iat: now - 60, exp: now + 9 * 60, iss: appId })
+  ).toString("base64url");
+  const signingInput = `${header}.${payload}`;
+  // cryptoSign() is the synchronous one-shot signing function (Node 12+)
+  const signature = cryptoSign("sha256", Buffer.from(signingInput), privateKey).toString("base64url");
+  return `${signingInput}.${signature}`;
 }
 
 /**
