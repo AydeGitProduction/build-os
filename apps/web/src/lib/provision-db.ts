@@ -3,10 +3,18 @@
 import { createClient } from '@supabase/supabase-js';
 
 // ---------------------------------------------------------------------------
-// Well-known provider UUIDs — DO NOT change these values
+// Well-known provider UUIDs — from integration_providers table
 // ---------------------------------------------------------------------------
-const GITHUB_PROVIDER_ID = 'a0000000-0000-0000-0000-000000000001';
-const VERCEL_PROVIDER_ID = 'a0000000-0000-0000-0000-000000000002';
+const GITHUB_PROVIDER_ID = '05e2c85b-69f5-4eb4-b2d0-cf243b2f2838';
+const VERCEL_PROVIDER_ID = '3acd1958-53d9-48fb-81a6-9ee70ea3ad69';
+
+// System credential UUIDs — created once at infrastructure setup
+// These are system-level service credentials (not user credentials)
+const GITHUB_SYSTEM_CREDENTIAL_ID = '4109f41e-a483-4624-8b12-6eb020b90399';
+const VERCEL_SYSTEM_CREDENTIAL_ID = '5f25b3cb-f8d4-460b-a814-257f5630ce48';
+
+// System user UUID (service account)
+const SYSTEM_USER_ID = '614c0632-50a0-44fb-b6e8-8563d08fa1c3';
 
 // Well-known environment UUID for the production environment
 const PRODUCTION_ENVIRONMENT_ID = '6766fc48-d89b-4a73-bfb0-a2b851de0ad9';
@@ -91,19 +99,18 @@ export async function saveProvisioningResult(
       {
         project_id: projectId,
         provider_id: GITHUB_PROVIDER_ID,
+        credential_id: GITHUB_SYSTEM_CREDENTIAL_ID,
         status: 'active',
         environment_map: {
           github_repo_id: github.repoId,
           github_repo_name: github.repoName,
           github_repo_url: github.repoUrl,
         },
-        // updated_at is handled by the DB trigger / default, but we set it
-        // explicitly here so the upsert conflict-update path also refreshes it.
+        created_by: SYSTEM_USER_ID,
         updated_at: new Date().toISOString(),
       },
       {
         onConflict: 'project_id,provider_id',
-        // ignoreDuplicates: false  ← default; we want to UPDATE on conflict
       }
     );
 
@@ -122,12 +129,14 @@ export async function saveProvisioningResult(
       {
         project_id: projectId,
         provider_id: VERCEL_PROVIDER_ID,
+        credential_id: VERCEL_SYSTEM_CREDENTIAL_ID,
         status: 'active',
         environment_map: {
           vercel_project_id: vercel.vercelProjectId,
           vercel_project_name: vercel.projectName,
           production_url: vercel.productionUrl,
         },
+        created_by: SYSTEM_USER_ID,
         updated_at: new Date().toISOString(),
       },
       {

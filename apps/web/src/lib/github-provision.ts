@@ -1,333 +1,342 @@
-/**
- * Unit tests for provisionGitHubRepo()
- *
- * Strategy:
- *   - Mock global `fetch` to simulate GitHub API responses.
- *   - Mock `jose` to avoid real RSA operations in unit tests.
- *   - Test: successful creation (201), idempotent (422), and error cases.
- */
+// src/lib/github-provision.ts
+//
+// Production GitHub provisioning service.
+// Creates isolated per-project repositories under the configured GitHub org.
+//
+// Auth strategy (in priority order):
+//   1. GitHub App (RS256 JWT) — if GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY are set
+//   2. Personal Access Token  — if GITHUB_TOKEN is set
+//
+// Required env vars:
+//   GITHUB_APP_ID           — App ID (numeric string)
+//   GITHUB_APP_PRIVATE_KEY  — PEM-encoded RSA private key (full, not base64)
+//   GITHUB_INSTALLATION_ID  — Installation ID for the org
+//   GITHUB_ORG              — Org / user where repos are created
+//
+// OR (PAT fallback):
+//   GITHUB_TOKEN            — PAT with repo + admin:org scope
+//   GITHUB_ORG              — Org / user where repos are created
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-// ---------------------------------------------------------------------------
-// Mock jose before importing the module under test
-// ---------------------------------------------------------------------------
-vi.mock("jose", () => {
-  return {
-    importPKCS8: vi.fn().mockResolvedValue({ type: "mock-private-key" }),
-    SignJWT: vi.fn().mockImplementation(() => ({
-      setProtectedHeader: vi.fn().mockReturnThis(),
-      setIssuedAt: vi.fn().mockReturnThis(),
-      setExpirationTime: vi.fn().mockReturnThis(),
-      setIssuer: vi.fn().mockReturnThis(),
-      sign: vi.fn().mockResolvedValue("mock.jwt.token"),
-    })),
-  };
-});
+import * as crypto from "crypto";
 
 // ---------------------------------------------------------------------------
-// Module under test (imported after mocks are set up)
-// ---------------------------------------------------------------------------
-import { provisionGitHubRepo } from "../github-provision";
-
-// ---------------------------------------------------------------------------
-// Helpers
+// Types
 // ---------------------------------------------------------------------------
 
-const MOCK_ENV = {
-  GITHUB_APP_ID: "123456",
-  GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\nmock\n-----END RSA PRIVATE KEY-----",
-  GITHUB_INSTALLATION_ID: "78901234",
-  GITHUB_REPO_OWNER: "my-org",
-};
+export interface GitHubRepoInfo {
+  repoId: number;
+  repoName: string;
+  repoUrl: string;
+  repoFullName: string;
+  defaultBranch: string;
+  cloneUrl: string;
+}
 
-const MOCK_PROJECT = {
-  id: "proj_abc123",
-  slug: "my-awesome-project",
-  name: "My Awesome Project",
-};
-
-const MOCK_REPO_RESPONSE = {
-  id: 987654321,
-  name: "buildos-my-awesome-project",
-  html_url: "https://github.com/my-org/buildos-my-awesome-project",
-  clone_url: "https://github.com/my-org/buildos-my-awesome-project.git",
-  default_branch: "main",
-};
-
-const MOCK_INSTALLATION_TOKEN_RESPONSE = {
-  token: "ghs_mockInstallationToken",
-  expires_at: "2099-01-01T00:00:00Z",
-};
-
-/** Creates a minimal Response-like mock */
-function mockResponse(
-  status: number,
-  body: unknown,
-  ok?: boolean
-): Response {
-  const bodyStr = JSON.stringify(body);
-  return {
-    ok: ok ?? status >= 200 && status < 300,
-    status,
-    statusText: status === 201 ? "Created" : status === 422 ? "Unprocessable Entity" : "Error",
-    json: vi.fn().mockResolvedValue(body),
-    text: vi.fn().mockResolvedValue(bodyStr),
-  } as unknown as Response;
+export interface GitHubProvisionInput {
+  id: string;
+  slug: string;
+  name: string;
 }
 
 // ---------------------------------------------------------------------------
-// Setup / Teardown
+// Custom errors
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
-  // Set env vars
-  Object.entries(MOCK_ENV).forEach(([key, value]) => {
-    process.env[key] = value;
-  });
-});
+export class GitHubAuthError extends Error {
+  public readonly statusCode: number;
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "GitHubAuthError";
+    this.statusCode = statusCode;
+    Object.setPrototypeOf(this, GitHubAuthError.prototype);
+  }
+}
 
-afterEach(() => {
-  // Clear env vars
-  Object.keys(MOCK_ENV).forEach((key) => {
-    delete process.env[key];
-  });
-  vi.restoreAllMocks();
-});
+export class GitHubProvisionError extends Error {
+  public readonly statusCode?: number;
+  public readonly repoName?: string;
+  constructor(message: string, statusCode?: number, repoName?: string) {
+    super(message);
+    this.name = "GitHubProvisionError";
+    this.statusCode = statusCode;
+    this.repoName = repoName;
+    Object.setPrototypeOf(this, GitHubProvisionError.prototype);
+  }
+}
 
 // ---------------------------------------------------------------------------
-// Tests
+// GitHub App JWT (RS256)
 // ---------------------------------------------------------------------------
 
-describe("provisionGitHubRepo()", () => {
-  describe("successful creation (HTTP 201)", () => {
-    it("returns normalised repo data when GitHub returns 201", async () => {
-      const fetchMock = vi
-        .spyOn(global, "fetch")
-        .mockResolvedValueOnce(
-          mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE) // POST /access_tokens
-        )
-        .mockResolvedValueOnce(
-          mockResponse(201, MOCK_REPO_RESPONSE) // POST /orgs/{org}/repos
+/**
+ * Generates a GitHub App JWT using RS256.
+ * The JWT is valid for 10 minutes (GitHub allows max 10m).
+ */
+async function generateAppJWT(appId: string, privateKeyPem: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iat: now - 60,          // issued 60s ago (clock skew buffer)
+    exp: now + 9 * 60,      // expires in 9 minutes
+    iss: appId,
+  };
+
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signingInput = `${header}.${body}`;
+
+  const sign = crypto.createSign("SHA256");
+  sign.update(signingInput);
+  sign.end();
+
+  const signature = sign.sign(privateKeyPem, "base64url");
+  return `${signingInput}.${signature}`;
+}
+
+/**
+ * Exchanges a GitHub App JWT for a short-lived installation access token.
+ */
+async function getInstallationToken(
+  appId: string,
+  privateKeyPem: string,
+  installationId: string
+): Promise<string> {
+  const jwt = await generateAppJWT(appId, privateKeyPem);
+
+  const response = await fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    }
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    const body = await response.text();
+    throw new GitHubAuthError(
+      `[github-provision] GitHub App auth failed (${response.status}): ${body}`,
+      response.status
+    );
+  }
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new GitHubProvisionError(
+      `[github-provision] Failed to get installation token (${response.status}): ${body}`,
+      response.status
+    );
+  }
+
+  const data = (await response.json()) as { token: string; expires_at: string };
+  return data.token;
+}
+
+// ---------------------------------------------------------------------------
+// Auth token resolution
+// ---------------------------------------------------------------------------
+
+async function resolveGitHubToken(): Promise<string> {
+  const appId = process.env.GITHUB_APP_ID;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const installationId = process.env.GITHUB_INSTALLATION_ID;
+
+  if (appId && privateKey && installationId) {
+    // Normalize PEM: env vars often have literal \n instead of actual newlines
+    const normalizedKey = privateKey.replace(/\\n/g, "\n");
+    return getInstallationToken(appId, normalizedKey, installationId);
+  }
+
+  // PAT fallback
+  const pat = process.env.GITHUB_TOKEN;
+  if (pat) {
+    return pat;
+  }
+
+  throw new GitHubAuthError(
+    "[github-provision] No GitHub credentials configured. " +
+      "Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY + GITHUB_INSTALLATION_ID " +
+      "or GITHUB_TOKEN.",
+    401
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Retry helper
+// ---------------------------------------------------------------------------
+
+const RETRY_DELAYS_MS = [500, 1000, 2000];
+
+async function withRetry<T>(
+  fn: (attempt: number) => Promise<T>,
+  label: string
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      lastError = err;
+      // Do not retry on auth errors
+      if (err instanceof GitHubAuthError) throw err;
+      // Do not retry on 404
+      if (err instanceof GitHubProvisionError && err.statusCode === 404) throw err;
+
+      if (attempt < 2) {
+        console.warn(
+          `[github-provision] ${label} attempt ${attempt + 1} failed, retrying in ${RETRY_DELAYS_MS[attempt]}ms`,
+          err instanceof Error ? err.message : String(err)
         );
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+  }
 
-      const result = await provisionGitHubRepo(MOCK_PROJECT);
+  throw lastError;
+}
 
-      expect(result).toEqual({
-        repoId: 987654321,
-        repoName: "buildos-my-awesome-project",
-        repoUrl: "https://github.com/my-org/buildos-my-awesome-project",
-        cloneUrl: "https://github.com/my-org/buildos-my-awesome-project.git",
-        defaultBranch: "main",
-      });
+// ---------------------------------------------------------------------------
+// Main export: provisionGitHubRepo
+// ---------------------------------------------------------------------------
 
-      // Verify the create call
-      const createCall = fetchMock.mock.calls[1];
-      expect(createCall[0]).toBe(
-        "https://api.github.com/orgs/my-org/repos"
-      );
-      expect(createCall[1]?.method).toBe("POST");
+/**
+ * Creates a new GitHub repository for a BuildOS project.
+ *
+ * - Repo name: `buildos-{project.slug}`
+ * - Created under the org/user in GITHUB_ORG env var
+ * - Idempotent: if repo already exists (422), fetches and returns it
+ * - Retry: up to 3 attempts with exponential backoff (500/1000/2000ms)
+ * - Auth: GitHub App JWT (preferred) or PAT fallback
+ *
+ * @throws GitHubAuthError       — token invalid/missing, not retried
+ * @throws GitHubProvisionError  — other API failures after all retries
+ */
+export async function provisionGitHubRepo(
+  project: GitHubProvisionInput
+): Promise<GitHubRepoInfo> {
+  const org = process.env.GITHUB_ORG;
+  if (!org) {
+    throw new GitHubProvisionError(
+      "[github-provision] GITHUB_ORG environment variable is not set."
+    );
+  }
 
-      const requestBody = JSON.parse(createCall[1]?.body as string);
-      expect(requestBody).toEqual({
-        name: "buildos-my-awesome-project",
+  const repoName = `buildos-${project.slug}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+  return withRetry(async (attempt) => {
+    const token = await resolveGitHubToken();
+
+    const createUrl = `https://api.github.com/orgs/${encodeURIComponent(org)}/repos`;
+
+    console.log(`[github-provision] Creating repo ${org}/${repoName} (attempt ${attempt + 1})`);
+
+    const createResponse = await fetch(createUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        name: repoName,
+        description: `BuildOS project: ${project.name}`,
         private: true,
         auto_init: true,
-        description: "BuildOS project: My Awesome Project",
-      });
+      }),
     });
 
-    it("uses correct Authorization header with installation token", async () => {
-      const fetchMock = vi
-        .spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(mockResponse(201, MOCK_REPO_RESPONSE));
+    // Idempotent: repo already exists
+    if (createResponse.status === 422) {
+      console.log(`[github-provision] Repo ${org}/${repoName} already exists — fetching.`);
+      return getExistingRepo(org, repoName, token);
+    }
 
-      await provisionGitHubRepo(MOCK_PROJECT);
+    if (createResponse.status === 401 || createResponse.status === 403) {
+      const body = await createResponse.text();
+      throw new GitHubAuthError(
+        `[github-provision] Auth failed creating ${org}/${repoName} (${createResponse.status}): ${body}`,
+        createResponse.status
+      );
+    }
 
-      const createCall = fetchMock.mock.calls[1];
-      expect(createCall[1]?.headers).toMatchObject({
-        Authorization: "Bearer ghs_mockInstallationToken",
-      });
-    });
+    if (!createResponse.ok) {
+      const body = await createResponse.text();
+      throw new GitHubProvisionError(
+        `[github-provision] GitHub API error (${createResponse.status}): ${body}`,
+        createResponse.status,
+        repoName
+      );
+    }
+
+    const repo = (await createResponse.json()) as {
+      id: number;
+      name: string;
+      html_url: string;
+      full_name: string;
+      default_branch: string;
+      clone_url: string;
+    };
+
+    console.log(`[github-provision] Created: ${repo.html_url}`);
+
+    return {
+      repoId: repo.id,
+      repoName: repo.name,
+      repoUrl: repo.html_url,
+      repoFullName: repo.full_name,
+      defaultBranch: repo.default_branch ?? "main",
+      cloneUrl: repo.clone_url,
+    };
+  }, `provisionGitHubRepo(${org}/${repoName})`);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: fetch existing repo
+// ---------------------------------------------------------------------------
+
+async function getExistingRepo(
+  org: string,
+  repoName: string,
+  token: string
+): Promise<GitHubRepoInfo> {
+  const url = `https://api.github.com/repos/${encodeURIComponent(org)}/${encodeURIComponent(repoName)}`;
+
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
   });
 
-  describe("idempotent handling (HTTP 422)", () => {
-    it("fetches and returns existing repo data when creation returns 422", async () => {
-      const fetchMock = vi
-        .spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(
-          mockResponse(422, {
-            message: "Repository creation failed.",
-            errors: [{ resource: "Repository", code: "already_exists" }],
-          })
-        )
-        .mockResolvedValueOnce(mockResponse(200, MOCK_REPO_RESPONSE)); // GET existing
+  if (!response.ok) {
+    const body = await response.text();
+    throw new GitHubProvisionError(
+      `[github-provision] Failed to fetch existing repo ${org}/${repoName} (${response.status}): ${body}`,
+      response.status,
+      repoName
+    );
+  }
 
-      const result = await provisionGitHubRepo(MOCK_PROJECT);
+  const repo = (await response.json()) as {
+    id: number;
+    name: string;
+    html_url: string;
+    full_name: string;
+    default_branch: string;
+    clone_url: string;
+  };
 
-      expect(result).toEqual({
-        repoId: 987654321,
-        repoName: "buildos-my-awesome-project",
-        repoUrl: "https://github.com/my-org/buildos-my-awesome-project",
-        cloneUrl: "https://github.com/my-org/buildos-my-awesome-project.git",
-        defaultBranch: "main",
-      });
-
-      // Verify the GET fallback call
-      const getCall = fetchMock.mock.calls[2];
-      expect(getCall[0]).toBe(
-        "https://api.github.com/repos/my-org/buildos-my-awesome-project"
-      );
-      expect(getCall[1]?.method).toBe("GET");
-    });
-
-    it("is idempotent: calling twice produces the same result", async () => {
-      vi.spyOn(global, "fetch")
-        // First call: create succeeds
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(mockResponse(201, MOCK_REPO_RESPONSE))
-        // Second call: already exists
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(mockResponse(422, { errors: [{ code: "already_exists" }] }))
-        .mockResolvedValueOnce(mockResponse(200, MOCK_REPO_RESPONSE));
-
-      const first = await provisionGitHubRepo(MOCK_PROJECT);
-      const second = await provisionGitHubRepo(MOCK_PROJECT);
-
-      expect(first).toEqual(second);
-    });
-  });
-
-  describe("error handling", () => {
-    it("throws a descriptive error on HTTP 401", async () => {
-      vi.spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(
-          mockResponse(401, { message: "Bad credentials" })
-        );
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /Failed to create GitHub repo.*401/
-      );
-    });
-
-    it("throws a descriptive error on HTTP 500", async () => {
-      vi.spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(
-          mockResponse(500, { message: "Internal Server Error" })
-        );
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /Failed to create GitHub repo.*500/
-      );
-    });
-
-    it("throws if installation token request fails", async () => {
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        mockResponse(403, { message: "Forbidden" })
-      );
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /Failed to obtain installation token.*403/
-      );
-    });
-
-    it("throws if GET existing repo fails after 422", async () => {
-      vi.spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(mockResponse(422, { errors: [{ code: "already_exists" }] }))
-        .mockResolvedValueOnce(mockResponse(404, { message: "Not Found" }));
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /Failed to fetch existing repo.*404/
-      );
-    });
-  });
-
-  describe("input validation", () => {
-    it("throws if project.slug is empty", async () => {
-      await expect(
-        provisionGitHubRepo({ id: "id1", slug: "", name: "Test" })
-      ).rejects.toThrow(/project.id, project.slug, and project.name/);
-    });
-
-    it("throws if project.name is empty", async () => {
-      await expect(
-        provisionGitHubRepo({ id: "id1", slug: "test-slug", name: "" })
-      ).rejects.toThrow(/project.id, project.slug, and project.name/);
-    });
-
-    it("throws if GITHUB_REPO_OWNER is not set", async () => {
-      delete process.env.GITHUB_REPO_OWNER;
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /GITHUB_REPO_OWNER/
-      );
-    });
-
-    it("throws if GITHUB_APP_ID is not set", async () => {
-      delete process.env.GITHUB_APP_ID;
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /GITHUB_APP_ID/
-      );
-    });
-
-    it("throws if GITHUB_INSTALLATION_ID is not set", async () => {
-      delete process.env.GITHUB_INSTALLATION_ID;
-
-      // The installation token call will fail before reaching GitHub
-      vi.spyOn(global, "fetch").mockResolvedValueOnce(
-        mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE)
-      );
-
-      await expect(provisionGitHubRepo(MOCK_PROJECT)).rejects.toThrow(
-        /GITHUB_INSTALLATION_ID/
-      );
-    });
-  });
-
-  describe("repo naming", () => {
-    it("prefixes the repo name with 'buildos-'", async () => {
-      const fetchMock = vi
-        .spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(
-          mockResponse(201, {
-            ...MOCK_REPO_RESPONSE,
-            name: "buildos-special-slug",
-          })
-        );
-
-      await provisionGitHubRepo({
-        id: "proj_xyz",
-        slug: "special-slug",
-        name: "Special Project",
-      });
-
-      const createBody = JSON.parse(
-        fetchMock.mock.calls[1][1]?.body as string
-      );
-      expect(createBody.name).toBe("buildos-special-slug");
-    });
-
-    it("uses the project.name in the description", async () => {
-      const fetchMock = vi
-        .spyOn(global, "fetch")
-        .mockResolvedValueOnce(mockResponse(201, MOCK_INSTALLATION_TOKEN_RESPONSE))
-        .mockResolvedValueOnce(mockResponse(201, MOCK_REPO_RESPONSE));
-
-      await provisionGitHubRepo(MOCK_PROJECT);
-
-      const createBody = JSON.parse(
-        fetchMock.mock.calls[1][1]?.body as string
-      );
-      expect(createBody.description).toBe(
-        "BuildOS project: My Awesome Project"
-      );
-    });
-  });
-});
+  return {
+    repoId: repo.id,
+    repoName: repo.name,
+    repoUrl: repo.html_url,
+    repoFullName: repo.full_name,
+    defaultBranch: repo.default_branch ?? "main",
+    cloneUrl: repo.clone_url,
+  };
+}

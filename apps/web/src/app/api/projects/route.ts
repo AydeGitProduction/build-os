@@ -139,6 +139,23 @@ export async function POST(request: NextRequest) {
       safe_stop: false,
     })
 
+    // Auto-trigger provisioning (fire-and-forget — does not block response)
+    // Provisions GitHub repo + Vercel project in background
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+    const internalSecret = process.env.BUILDOS_INTERNAL_SECRET ?? process.env.BUILDOS_SECRET
+    if (internalSecret) {
+      fetch(`${appUrl}/api/projects/${(project as any).id}/provision`, {
+        method: 'POST',
+        headers: {
+          'x-buildos-secret': internalSecret,
+          'content-type': 'application/json',
+        },
+      }).catch((provisionErr) => {
+        // Log but never fail project creation due to provisioning errors
+        console.error('[projects/route] Provisioning trigger failed:', provisionErr)
+      })
+    }
+
     return NextResponse.json({ data: project }, { status: 201 })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)

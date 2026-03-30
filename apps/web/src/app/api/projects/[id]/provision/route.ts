@@ -1,376 +1,215 @@
-import { NextRequest } from "next/server";
-import { POST } from "./route";
+// src/app/api/projects/[id]/provision/route.ts
+//
+// POST /api/projects/:id/provision
+//
+// Provisions a per-project GitHub repository and Vercel project.
+// Stores results in project_integrations and deployment_targets.
+//
+// Authentication:
+//   Internal call: header X-BuildOS-Secret (BUILDOS_INTERNAL_SECRET env var)
+//   Admin call:    header Authorization: Bearer <BUILDOS_SECRET>
+//
+// Idempotent: if provisioning already ran (active integration exists),
+// returns the existing result without re-provisioning.
 
-// ─── Mock Dependencies ────────────────────────────────────────────────────────
-
-jest.mock("@supabase/supabase-js", () => ({
-  createClient: jest.fn(),
-}));
-
-jest.mock("@/lib/github-provision", () => ({
-  provisionGitHubRepo: jest.fn(),
-}));
-
-jest.mock("@/lib/vercel-provision", () => ({
-  provisionVercelProject: jest.fn(),
-  injectVercelEnvVars: jest.fn(),
-}));
-
-jest.mock("@/lib/provision-db", () => ({
-  saveProvisioningResult: jest.fn(),
-}));
-
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { provisionGitHubRepo } from "@/lib/github-provision";
-import { provisionVercelProject, injectVercelEnvVars } from "@/lib/vercel-provision";
+import { provisionGitHubRepo, GitHubAuthError } from "@/lib/github-provision";
+import { provisionVercelProject, VercelAuthError } from "@/lib/vercel-provision";
 import { saveProvisioningResult } from "@/lib/provision-db";
 
-// ─── Test Fixtures ────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-const MOCK_PROJECT = {
-  id: "proj-123",
-  slug: "my-project",
-  name: "My Project",
-  status: "active",
-};
+// Real provider UUIDs from integration_providers table
+const GITHUB_PROVIDER_ID = "05e2c85b-69f5-4eb4-b2d0-cf243b2f2838";
 
-const MOCK_GITHUB_RESULT = {
-  repoName: "my-project",
-  repoUrl: "https://github.com/org/my-project",
-  repoFullName: "org/my-project",
-  defaultBranch: "main",
-};
+// ---------------------------------------------------------------------------
+// Admin Supabase client
+// ---------------------------------------------------------------------------
 
-const MOCK_VERCEL_RESULT = {
-  vercelProjectId: "vercel-proj-abc",
-  productionUrl: "https://my-project.vercel.app",
-};
+function getAdminClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error("[provision/route] Missing Supabase env vars.");
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+}
 
-const INTERNAL_SECRET = "test-internal-secret";
+// ---------------------------------------------------------------------------
+// Auth check
+// ---------------------------------------------------------------------------
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
+function isAuthorized(request: NextRequest): boolean {
+  const internalSecret = process.env.BUILDOS_INTERNAL_SECRET;
+  const legacySecret = process.env.BUILDOS_SECRET;
 
-function makeRequest(
-  projectId: string,
-  headers: Record<string, string> = {}
-): NextRequest {
-  return new NextRequest(
-    `http://localhost/api/projects/${projectId}/provision`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...headers,
-      },
+  // X-BuildOS-Secret header (preferred for internal calls)
+  const headerSecret = request.headers.get("x-buildos-secret");
+  if (internalSecret && headerSecret === internalSecret) return true;
+  if (legacySecret && headerSecret === legacySecret) return true;
+
+  // Authorization: Bearer header
+  const authHeader = request.headers.get("authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    if (internalSecret && token === internalSecret) return true;
+    if (legacySecret && token === legacySecret) return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Route handler
+// ---------------------------------------------------------------------------
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const projectId = params.id;
+  if (!projectId) {
+    return NextResponse.json({ error: "project id is required" }, { status: 400 });
+  }
+
+  const supabase = getAdminClient();
+
+  // ── Resolve project ───────────────────────────────────────────────────────
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id, name, slug")
+    .eq("id", projectId)
+    .single();
+
+  if (projectError || !project) {
+    return NextResponse.json(
+      { error: `Project ${projectId} not found` },
+      { status: 404 }
+    );
+  }
+
+  // ── Idempotency: check for existing active integration ────────────────────
+  const { data: existingIntegration } = await supabase
+    .from("project_integrations")
+    .select("id, environment_map, status")
+    .eq("project_id", projectId)
+    .eq("provider_id", GITHUB_PROVIDER_ID)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (existingIntegration) {
+    const envMap = existingIntegration.environment_map as Record<string, unknown>;
+    return NextResponse.json({
+      alreadyProvisioned: true,
+      projectId,
+      repoUrl: envMap?.github_repo_url ?? null,
+      repoName: envMap?.github_repo_name ?? null,
+      message: "Project already provisioned.",
+    });
+  }
+
+  // ── Provision GitHub repository ───────────────────────────────────────────
+  let githubResult;
+  try {
+    githubResult = await provisionGitHubRepo({
+      id: project.id,
+      slug: (project as any).slug,
+      name: (project as any).name,
+    });
+  } catch (err) {
+    if (err instanceof GitHubAuthError) {
+      console.error("[provision/route] GitHub auth error:", err.message);
+      return NextResponse.json(
+        { error: "GitHub authentication failed. Check GITHUB_APP_ID / GITHUB_TOKEN env vars.", detail: err.message },
+        { status: 503 }
+      );
     }
-  );
-}
+    console.error("[provision/route] GitHub provisioning failed:", err);
+    return NextResponse.json(
+      { error: "GitHub provisioning failed.", detail: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
+  }
 
-function mockSupabaseForProject(project: typeof MOCK_PROJECT | null, alreadyProvisioned = false) {
-  const mockSingle = jest.fn().mockResolvedValue({
-    data: project,
-    error: project ? null : { message: "Not found" },
-  });
+  // ── Provision Vercel project ──────────────────────────────────────────────
+  const vercelTeamId = process.env.VERCEL_TEAM_ID ?? undefined;
+  const vercelProjectName = `buildos-${(project as any).slug}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
-  const mockMaybeSingle = jest.fn().mockResolvedValue({
-    data: alreadyProvisioned ? { id: "integration-1", status: "active" } : null,
-    error: null,
-  });
-
-  const mockSelect = jest.fn().mockReturnThis();
-  const mockEq = jest.fn().mockReturnThis();
-
-  (createClient as jest.Mock).mockReturnValue({
-    from: jest.fn().mockReturnValue({
-      select: mockSelect,
-      eq: mockEq,
-      single: mockSingle,
-      maybeSingle: mockMaybeSingle,
-    }),
-    auth: {
-      getUser: jest.fn().mockResolvedValue({
-        data: { user: { id: "user-1" } },
-        error: null,
-      }),
-    },
-  });
-}
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-describe("POST /api/projects/[id]/provision", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.BUILDOS_INTERNAL_SECRET = INTERNAL_SECRET;
-    process.env.NEXT_PUBLIC_SUPABASE_URL = "https://test.supabase.co";
-    process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
-  });
-
-  // ── Auth Tests ─────────────────────────────────────────────────────────────
-
-  describe("Authentication", () => {
-    it("returns 401 when no credentials provided", async () => {
-      const req = makeRequest("proj-123");
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(401);
-      const body = await res.json();
-      expect(body.step).toBe("auth");
+  let vercelResult;
+  try {
+    const provisioned = await provisionVercelProject({
+      projectName: vercelProjectName,
+      gitRepository: {
+        type: "github",
+        repo: githubResult.repoFullName,
+      },
+      framework: "nextjs",
+      teamId: vercelTeamId,
     });
+    vercelResult = {
+      vercelProjectId: provisioned.project.id,
+      productionUrl: `https://${vercelProjectName}.vercel.app`,
+      projectName: provisioned.project.name,
+    };
+  } catch (err) {
+    if (err instanceof VercelAuthError) {
+      console.error("[provision/route] Vercel auth error:", err.message);
+      return NextResponse.json(
+        { error: "Vercel authentication failed. Check VERCEL_TOKEN env var.", detail: err.message },
+        { status: 503 }
+      );
+    }
+    console.error("[provision/route] Vercel provisioning failed:", err);
+    return NextResponse.json(
+      { error: "Vercel provisioning failed.", detail: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
+  }
 
-    it("returns 401 when internal secret is wrong", async () => {
-      const req = makeRequest("proj-123", { "x-buildos-secret": "wrong-secret" });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(401);
-      const body = await res.json();
-      expect(body.error).toBe("Invalid internal secret");
-    });
-
-    it("accepts valid BUILDOS_INTERNAL_SECRET", async () => {
-      mockSupabaseForProject(MOCK_PROJECT);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockResolvedValue(undefined);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(200);
-    });
-
-    it("accepts valid BUILDOS_SECRET (legacy)", async () => {
-      delete process.env.BUILDOS_INTERNAL_SECRET;
-      process.env.BUILDOS_SECRET = "legacy-secret";
-
-      mockSupabaseForProject(MOCK_PROJECT);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockResolvedValue(undefined);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": "legacy-secret" });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(200);
-      delete process.env.BUILDOS_SECRET;
-    });
-  });
-
-  // ── Project Lookup Tests ───────────────────────────────────────────────────
-
-  describe("Project lookup", () => {
-    it("returns 404 when project not found", async () => {
-      mockSupabaseForProject(null);
-
-      const req = makeRequest("proj-unknown", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-unknown" } });
-
-      expect(res.status).toBe(404);
-      const body = await res.json();
-      expect(body.error).toBe("Project not found");
-    });
-  });
-
-  // ── Idempotency Tests ──────────────────────────────────────────────────────
-
-  describe("Idempotency", () => {
-    it("returns alreadyProvisioned=true when active integration exists", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, true);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.alreadyProvisioned).toBe(true);
-
-      // Should not call any provisioning steps
-      expect(provisionGitHubRepo).not.toHaveBeenCalled();
-      expect(provisionVercelProject).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── Provisioning Flow Tests ────────────────────────────────────────────────
-
-  describe("Provisioning flow", () => {
-    it("returns success with repoUrl and vercelUrl on full success", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockResolvedValue(undefined);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body).toEqual({
+  // ── Persist to DB ─────────────────────────────────────────────────────────
+  try {
+    await saveProvisioningResult(projectId, githubResult, vercelResult);
+  } catch (err) {
+    console.error("[provision/route] DB persistence failed:", err);
+    // Log but don't fail the response — provisioning succeeded even if DB write fails
+    return NextResponse.json(
+      {
         success: true,
-        repoUrl: MOCK_GITHUB_RESULT.repoUrl,
-        vercelUrl: MOCK_VERCEL_RESULT.productionUrl,
-      });
-    });
+        warning: "Provisioning succeeded but DB persistence failed.",
+        projectId,
+        repoUrl: githubResult.repoUrl,
+        repoName: githubResult.repoName,
+        vercelProjectId: vercelResult.vercelProjectId,
+        productionUrl: vercelResult.productionUrl,
+        dbError: err instanceof Error ? err.message : String(err),
+      },
+      { status: 207 }
+    );
+  }
 
-    it("calls steps in correct sequential order", async () => {
-      const order: string[] = [];
+  // ── Success ───────────────────────────────────────────────────────────────
+  console.log(
+    `[provision/route] Provisioned project ${projectId}: ` +
+    `${githubResult.repoUrl} + ${vercelResult.productionUrl}`
+  );
 
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockImplementation(async () => {
-        order.push("github");
-        return MOCK_GITHUB_RESULT;
-      });
-      (provisionVercelProject as jest.Mock).mockImplementation(async () => {
-        order.push("vercel");
-        return MOCK_VERCEL_RESULT;
-      });
-      (injectVercelEnvVars as jest.Mock).mockImplementation(async () => {
-        order.push("env");
-      });
-      (saveProvisioningResult as jest.Mock).mockImplementation(async () => {
-        order.push("db");
-      });
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      await POST(req, { params: { id: "proj-123" } });
-
-      expect(order).toEqual(["github", "vercel", "env", "db"]);
-    });
-
-    it("passes repoName from GitHub result to Vercel provisioning", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockResolvedValue(undefined);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      await POST(req, { params: { id: "proj-123" } });
-
-      expect(provisionVercelProject).toHaveBeenCalledWith(
-        MOCK_PROJECT,
-        MOCK_GITHUB_RESULT.repoName
-      );
-    });
-
-    it("passes vercelProjectId from Vercel result to env injection", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockResolvedValue(undefined);
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      await POST(req, { params: { id: "proj-123" } });
-
-      expect(injectVercelEnvVars).toHaveBeenCalledWith(
-        MOCK_VERCEL_RESULT.vercelProjectId,
-        MOCK_PROJECT
-      );
-    });
+  return NextResponse.json({
+    success: true,
+    projectId,
+    repoUrl: githubResult.repoUrl,
+    repoName: githubResult.repoName,
+    repoFullName: githubResult.repoFullName,
+    vercelProjectId: vercelResult.vercelProjectId,
+    productionUrl: vercelResult.productionUrl,
   });
-
-  // ── Error Handling Tests ───────────────────────────────────────────────────
-
-  describe("Step-level error handling", () => {
-    it("returns step=github on GitHub failure", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockRejectedValue(
-        new Error("GitHub API rate limit exceeded")
-      );
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body).toEqual({
-        error: "GitHub API rate limit exceeded",
-        step: "github",
-      });
-
-      // Subsequent steps should NOT be called
-      expect(provisionVercelProject).not.toHaveBeenCalled();
-      expect(injectVercelEnvVars).not.toHaveBeenCalled();
-      expect(saveProvisioningResult).not.toHaveBeenCalled();
-    });
-
-    it("returns step=vercel on Vercel failure", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockRejectedValue(
-        new Error("Vercel team not found")
-      );
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body).toEqual({
-        error: "Vercel team not found",
-        step: "vercel",
-      });
-
-      expect(injectVercelEnvVars).not.toHaveBeenCalled();
-      expect(saveProvisioningResult).not.toHaveBeenCalled();
-    });
-
-    it("returns step=env on env injection failure", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockRejectedValue(
-        new Error("Env var already exists")
-      );
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body).toEqual({
-        error: "Env var already exists",
-        step: "env",
-      });
-
-      expect(saveProvisioningResult).not.toHaveBeenCalled();
-    });
-
-    it("returns step=db on database save failure", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockResolvedValue(MOCK_GITHUB_RESULT);
-      (provisionVercelProject as jest.Mock).mockResolvedValue(MOCK_VERCEL_RESULT);
-      (injectVercelEnvVars as jest.Mock).mockResolvedValue(undefined);
-      (saveProvisioningResult as jest.Mock).mockRejectedValue(
-        new Error("Unique constraint violation")
-      );
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body).toEqual({
-        error: "Unique constraint violation",
-        step: "db",
-      });
-    });
-
-    it("handles non-Error thrown objects gracefully", async () => {
-      mockSupabaseForProject(MOCK_PROJECT, false);
-      (provisionGitHubRepo as jest.Mock).mockRejectedValue("string error");
-
-      const req = makeRequest("proj-123", { "x-buildos-secret": INTERNAL_SECRET });
-      const res = await POST(req, { params: { id: "proj-123" } });
-
-      expect(res.status).toBe(500);
-      const body = await res.json();
-      expect(body.step).toBe("github");
-      expect(typeof body.error).toBe("string");
-    });
-  });
-});
+}
