@@ -207,6 +207,12 @@ async function getInstallationToken(
 // ---------------------------------------------------------------------------
 
 async function resolveGitHubToken(): Promise<string> {
+  // PAT takes priority: simpler auth, no installation permission constraints.
+  // If GITHUB_TOKEN is set, use it directly.
+  const pat = process.env.GITHUB_TOKEN;
+  if (pat) return pat;
+
+  // Fall back to GitHub App installation token (RS256 JWT exchange)
   const appId = process.env.GITHUB_APP_ID;
   const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
   // Support both GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
@@ -217,12 +223,6 @@ async function resolveGitHubToken(): Promise<string> {
     // normalizePrivateKeyPem handles \n sequences, bare base64, etc.
     const normalizedKey = normalizePrivateKeyPem(privateKey);
     return getInstallationToken(appId, normalizedKey, installationId);
-  }
-
-  // PAT fallback
-  const pat = process.env.GITHUB_TOKEN;
-  if (pat) {
-    return pat;
   }
 
   throw new GitHubAuthError(
