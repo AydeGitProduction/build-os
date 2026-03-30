@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import {
   LayoutGrid, FolderKanban, Cpu, BookOpen, Plug, DollarSign,
   ChevronDown, ChevronRight, Settings, LogOut, Zap, Rocket, Activity,
-  Terminal, Users, Server, Eye,
+  Terminal, Users, Server, Eye, Wand2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -25,6 +25,7 @@ interface ProjectNavItem extends NavItem {
 
 const TOP_NAV: NavItem[] = [
   { label: 'Projects', href: '/projects', icon: FolderKanban, exact: true },
+  { label: 'Wizard', href: '/wizard', icon: Wand2 },
 ]
 
 function getProjectNav(projectId: string): ProjectNavItem[] {

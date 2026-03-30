@@ -1,0 +1,872 @@
+/* ============================================================
+   IRIS Workspace — Global Styles
+   P9B-UX v2 — Split layout, chat, preview, readiness, mobile
+   ============================================================ */
+
+/* ---- Workspace shell ---- */
+.iris-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #f8f9fc;
+  overflow: hidden;
+}
+
+.iris-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.iris-chat-pane {
+  width: 40%;
+  min-width: 320px;
+  border-right: 1px solid #e8eaf0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.iris-preview-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #f8f9fc;
+  overflow: hidden;
+}
+
+/* Tablet: stacked */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .iris-split {
+    flex-direction: column;
+  }
+  .iris-chat-pane {
+    width: 100%;
+    height: 50%;
+    border-right: none;
+    border-bottom: 1px solid #e8eaf0;
+  }
+}
+
+/* Mobile: hide split */
+@media (max-width: 767px) {
+  .iris-split {
+    display: none;
+  }
+}
+
+/* ---- Status Bar ---- */
+.iris-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e8eaf0;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.iris-status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.iris-logo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.iris-brand {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #6366f1;
+}
+
+.iris-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.iris-crumb-sep {
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.iris-crumb {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.iris-crumb.muted {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.iris-readiness-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 100px;
+  padding: 4px 12px;
+  transition: background 0.3s, border-color 0.3s;
+}
+
+.iris-readiness-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  animation: iris-pulse 2s ease-in-out infinite;
+}
+
+.iris-readiness-pct {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.iris-readiness-label {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+@media (max-width: 767px) {
+  .iris-readiness-label {
+    display: none;
+  }
+}
+
+/* ---- Chat ---- */
+.iris-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.iris-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+
+.iris-msg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  animation: iris-msg-in 0.2s ease-out;
+}
+
+.iris-msg--user {
+  flex-direction: row-reverse;
+}
+
+.iris-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #f0f0ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.iris-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: #f3f4f6;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.iris-msg--user .iris-bubble {
+  background: #6366f1;
+  border-radius: 16px 16px 4px 16px;
+}
+
+.iris-msg--assistant .iris-bubble {
+  border-radius: 16px 16px 16px 4px;
+}
+
+.iris-bubble-text {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2937;
+  margin: 0;
+}
+
+.iris-msg--user .iris-bubble-text {
+  color: #ffffff;
+}
+
+.iris-bubble--typing {
+  padding: 12px 16px;
+}
+
+.iris-typing-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.iris-typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+  animation: iris-dot-bounce 1.2s ease-in-out infinite;
+}
+
+.iris-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.iris-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+.iris-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 0;
+  animation: iris-msg-in 0.3s ease-out 0.1s both;
+}
+
+.iris-chip {
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 100px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  white-space: nowrap;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.iris-chip:hover {
+  background: #f0f0ff;
+  border-color: #6366f1;
+  color: #6366f1;
+}
+
+.iris-chip:active {
+  transform: scale(0.97);
+}
+
+.iris-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #e8eaf0;
+  background: #ffffff;
+  align-items: flex-end;
+}
+
+.iris-input {
+  flex: 1;
+  resize: none;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2937;
+  background: #f9fafb;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-height: 44px;
+}
+
+.iris-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background: #ffffff;
+}
+
+.iris-send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #6366f1;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.iris-send-btn:hover:not(:disabled) {
+  background: #4f46e5;
+}
+
+.iris-send-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.iris-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- Readiness Bar ---- */
+.iris-rb {
+  padding: 12px 16px;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  border: 1px solid #e8eaf0;
+}
+
+.iris-rb--compact {
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.iris-rb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.iris-rb-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.iris-rb-pct {
+  font-size: 20px;
+  font-weight: 700;
+  transition: color 0.4s;
+}
+
+.iris-rb--compact .iris-rb-pct {
+  font-size: 14px;
+}
+
+.iris-rb-track {
+  width: 100%;
+  height: 6px;
+  background: #f3f4f6;
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+.iris-rb--compact .iris-rb-track {
+  height: 4px;
+}
+
+.iris-rb-fill {
+  height: 100%;
+  border-radius: 100px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.4s;
+}
+
+.iris-rb-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.iris-rb-label {
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 0.4s;
+}
+
+.iris-rb-missing {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* ---- Assumption Cards ---- */
+.iris-ac {
+  padding: 16px;
+}
+
+.iris-ac-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9ca3af;
+  margin: 0 0 10px;
+}
+
+.iris-ac-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.iris-ac-card {
+  background: #ffffff;
+  border: 1px solid #e8eaf0;
+  border-radius: 10px;
+  padding: 12px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  animation: iris-card-in 0.2s ease-out;
+}
+
+.iris-ac-card--accepted { border-color: #bbf7d0; background: #f0fdf4; }
+.iris-ac-card--rejected { border-color: #fecaca; background: #fff5f5; opacity: 0.7; }
+.iris-ac-card--modified { border-color: #c7d2fe; background: #eef2ff; }
+
+.iris-ac-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.iris-ac-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+.iris-ac-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 100px;
+}
+
+.iris-ac-badge--pending  { background: #f3f4f6; color: #6b7280; }
+.iris-ac-badge--accepted { background: #dcfce7; color: #16a34a; }
+.iris-ac-badge--rejected { background: #fee2e2; color: #dc2626; }
+.iris-ac-badge--modified { background: #e0e7ff; color: #4338ca; }
+
+.iris-ac-value {
+  font-size: 13px;
+  color: #1f2937;
+  margin: 4px 0 8px;
+  font-weight: 500;
+}
+
+.iris-ac-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.iris-ac-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.iris-ac-btn:active { transform: scale(0.96); }
+
+.iris-ac-btn--accept { background: #dcfce7; color: #16a34a; border-color: #bbf7d0; }
+.iris-ac-btn--accept:hover { background: #bbf7d0; }
+
+.iris-ac-btn--modify { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.iris-ac-btn--modify:hover { background: #c7d2fe; }
+
+.iris-ac-btn--reject { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
+.iris-ac-btn--reject:hover { background: #fecaca; }
+
+.iris-ac-btn--save { background: #6366f1; color: #fff; border-color: #6366f1; }
+.iris-ac-btn--save:hover { background: #4f46e5; }
+
+.iris-ac-edit {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.iris-ac-input {
+  flex: 1;
+  border: 1px solid #6366f1;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  outline: none;
+  color: #1f2937;
+  min-height: 36px;
+  font-family: inherit;
+}
+
+/* ---- Preview Panel ---- */
+.iris-pp {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.iris-pp-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+
+.iris-pp-empty-icon { opacity: 0.4; }
+
+.iris-pp-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.iris-pp-empty-sub {
+  font-size: 13px;
+  color: #d1d5db;
+  max-width: 260px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.iris-pp-building {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px;
+}
+
+.iris-pp-building-pulse {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: iris-pp-pulse 1.5s ease-in-out infinite;
+}
+
+.iris-pp-building-text {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.iris-pp-skeleton {
+  width: 100%;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.iris-skel {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  animation: iris-shimmer 1.5s infinite;
+  height: 14px;
+}
+
+.iris-skel--title { height: 20px; width: 60%; }
+.iris-skel--line  { width: 100%; }
+.iris-skel--short { width: 75%; }
+
+.iris-pp-content {
+  animation: iris-pp-fadein 0.3s ease-out;
+}
+
+.iris-pp-section {
+  padding: 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.iris-pp-section--highlight {
+  animation: iris-pp-highlight 2s ease-out;
+}
+
+.iris-pp-project-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 6px;
+}
+
+.iris-pp-project-desc {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.iris-pp-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9ca3af;
+  margin: 0 0 12px;
+}
+
+.iris-pp-phases {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+}
+
+.iris-pp-phase {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  position: relative;
+  animation: iris-phase-in 0.3s ease-out both;
+}
+
+.iris-pp-phase:nth-child(1) { animation-delay: 0ms; }
+.iris-pp-phase:nth-child(2) { animation-delay: 60ms; }
+.iris-pp-phase:nth-child(3) { animation-delay: 120ms; }
+.iris-pp-phase:nth-child(4) { animation-delay: 180ms; }
+
+.iris-pp-phase-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #6366f1;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.iris-pp-phase-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex: 1;
+  padding: 4px 0 16px;
+  border-bottom: 1px dashed #f3f4f6;
+}
+
+.iris-pp-phase:last-child .iris-pp-phase-info {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.iris-pp-phase-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.iris-pp-phase-dur {
+  font-size: 12px;
+  color: #9ca3af;
+  background: #f3f4f6;
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+
+/* ---- Mobile Tabs ---- */
+.iris-mobile {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 767px) {
+  .iris-mobile { display: flex; }
+}
+
+.iris-mobile-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.iris-mobile-tabs {
+  display: flex;
+  border-top: 1px solid #e8eaf0;
+  background: #ffffff;
+  flex-shrink: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.iris-mobile-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  min-height: 56px;
+  gap: 3px;
+  transition: background 0.15s;
+  touch-action: manipulation;
+}
+
+.iris-mobile-tab:active { background: #f3f4f6; }
+
+.iris-tab-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.iris-tab-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ca3af;
+  transition: color 0.15s;
+}
+
+.iris-mobile-tab--active .iris-tab-label { color: #6366f1; }
+
+.iris-mobile-plan {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.iris-mobile-plan-steps {
+  background: #ffffff;
+  border: 1px solid #e8eaf0;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.iris-mobile-plan-hint {
+  font-size: 13px;
+  color: #9ca3af;
+  margin: 0 0 12px;
+}
+
+.iris-mobile-plan-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.iris-mobile-plan-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.iris-plan-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.iris-plan-dot--active { background: #6366f1; }
+
+.iris-plan-step-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+}
+
+/* ---- Keyframe Animations ---- */
+@keyframes iris-msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes iris-dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40%           { transform: translateY(-6px); }
+}
+
+@keyframes iris-card-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes iris-pp-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes iris-pp-highlight {
+  0%   { background: #fffbeb; }
+  100% { background: transparent; }
+}
+
+@keyframes iris-pp-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.2); opacity: 0.6; }
+}
+
+@keyframes iris-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes iris-phase-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes iris-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+/* ---- Reduced Motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .iris-msg,
+  .iris-chips,
+  .iris-ac-card,
+  .iris-pp-content,
+  .iris-pp-phase,
+  .iris-pp-section--highlight {
+    animation: none;
+  }
+  .iris-typing-dots span { animation: none; opacity: 0.5; }
+  .iris-readiness-dot    { animation: none; }
+  .iris-pp-building-pulse { animation: none; opacity: 0.5; }
+  .iris-skel             { animation: none; }
+  .iris-rb-fill,
+  .iris-plan-dot         { transition: none; }
+}
