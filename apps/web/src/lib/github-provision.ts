@@ -72,14 +72,44 @@ export class GitHubProvisionError extends Error {
  * Generates a GitHub App JWT using RS256 via jsonwebtoken.
  * The JWT is valid for 9 minutes (GitHub allows max 10m).
  */
+/**
+ * Normalizes a private key string into a valid RSA PEM.
+ * Handles the following formats coming out of env vars:
+ *   1. Full PEM with actual newlines (ideal)
+ *   2. Full PEM with literal \n escape sequences (common in env vars)
+ *   3. Bare base64 body without PEM headers (some CI/CD systems strip them)
+ */
+function normalizePrivateKeyPem(raw: string): string {
+  // Step 1: Replace literal \n sequences with actual newlines
+  let pem = raw.replace(/\\n/g, "\n").trim();
+
+  // Step 2: If PEM headers are present, return as-is (just ensure CRLF → LF)
+  if (pem.includes("-----BEGIN")) {
+    return pem.replace(/\r\n/g, "\n");
+  }
+
+  // Step 3: Key is bare base64 without headers — wrap as PKCS#1 RSA private key
+  // (GitHub App keys are always PKCS#1 RSA format)
+  console.warn(
+    "[github-provision] GITHUB_APP_PRIVATE_KEY lacks PEM headers — " +
+    "wrapping as -----BEGIN RSA PRIVATE KEY-----. " +
+    "Consider storing the full PEM including headers."
+  );
+  const b64 = pem.replace(/\s/g, "");
+  const lines = b64.match(/.{1,64}/g) ?? [b64];
+  return [
+    "-----BEGIN RSA PRIVATE KEY-----",
+    ...lines,
+    "-----END RSA PRIVATE KEY-----",
+  ].join("\n");
+}
+
 function generateAppJWT(appId: string, privateKeyPem: string): string {
-  // jsonwebtoken handles PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
-  // and PKCS#8 (-----BEGIN PRIVATE KEY-----) PEM formats reliably
-  // across all Node.js / OpenSSL versions including OpenSSL 3.x.
+  const normalizedPem = normalizePrivateKeyPem(privateKeyPem);
   const now = Math.floor(Date.now() / 1000);
   return jwt.sign(
     { iat: now - 60, exp: now + 9 * 60, iss: appId },
-    privateKeyPem,
+    normalizedPem,
     { algorithm: "RS256" }
   );
 }
@@ -138,8 +168,8 @@ async function resolveGitHubToken(): Promise<string> {
     process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID;
 
   if (appId && privateKey && installationId) {
-    // Normalize PEM: env vars often have literal \n instead of actual newlines
-    const normalizedKey = privateKey.replace(/\\n/g, "\n");
+    // normalizePrivateKeyPem handles \n sequences, bare base64, etc.
+    const normalizedKey = normalizePrivateKeyPem(privateKey);
     return getInstallationToken(appId, normalizedKey, installationId);
   }
 
