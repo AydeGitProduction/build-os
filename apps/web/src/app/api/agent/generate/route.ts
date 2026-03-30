@@ -1,14 +1,17 @@
 /**
- * /api/agent/generate — ERT-P3 C2-BE
- * Code generation pipeline: agent output → PatchOperations → file write.
- * Orchestrates the full flow: parse agent output → validate → apply patches
- * via PatchEngine → update agent_output generation_status → return result.
+ * /api/agent/generate — ERT-P3 C2-BE (P0 patched)
+ * Code generation pipeline: agent output → PatchOperations → file write → GitHub commit.
+ *
+ * Auth: accepts both user JWT AND X-Buildos-Secret (internal n8n/system calls).
+ * After files_written: commits to GitHub via GitHub App (non-fatal if unconfigured).
+ * After GitHub commit: triggers Vercel deploy hook (non-fatal if unconfigured).
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/supabase/server'
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
+import { commitFilesToGitHub, triggerVercelDeploy } from '@/lib/github-commit'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Request shape
@@ -68,13 +71,33 @@ async function recordGenerationEvent(
 // Route handler
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function POST(request: NextRequest) {
-  const supabase = await createServerSupabaseClient()
+// Allow up to 60s: PatchEngine + GitHub API calls can take time
+export const maxDuration = 60
 
-  // Auth
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+export async function POST(request: NextRequest) {
+  // ── Auth: accept X-Buildos-Secret (internal) OR user JWT ─────────────────
+  const webhookSecret = request.headers.get('X-Buildos-Secret')
+  const validSecrets = [
+    process.env.N8N_WEBHOOK_SECRET,
+    process.env.BUILDOS_INTERNAL_SECRET,
+    process.env.BUILDOS_SECRET,
+  ].filter(Boolean)
+  const isInternalCall = webhookSecret && validSecrets.includes(webhookSecret)
+
+  // Admin client for internal calls (bypasses RLS); user client for browser calls
+  let supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>
+  let projectOwnerId: string | null = null
+
+  if (isInternalCall) {
+    // Internal path: use admin client, skip ownership check
+    supabase = createAdminSupabaseClient() as unknown as Awaited<ReturnType<typeof createServerSupabaseClient>>
+  } else {
+    supabase = await createServerSupabaseClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    projectOwnerId = user.id
   }
 
   // Parse body
@@ -97,16 +120,28 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Verify project ownership
-  const { data: project } = await supabase
-    .from('projects')
-    .select('id')
-    .eq('id', project_id)
-    .eq('user_id', user.id)
-    .maybeSingle()
-
-  if (!project) {
-    return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+  // Verify project exists (ownership check only for user JWT path)
+  if (projectOwnerId) {
+    const { data: project } = await supabase
+      .from('projects')
+      .select('id')
+      .eq('id', project_id)
+      .eq('user_id', projectOwnerId)
+      .maybeSingle()
+    if (!project) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
+  } else {
+    // Internal path: just confirm the project row exists
+    const admin = createAdminSupabaseClient()
+    const { data: project } = await admin
+      .from('projects')
+      .select('id')
+      .eq('id', project_id)
+      .maybeSingle()
+    if (!project) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    }
   }
 
   // Mark as generating
@@ -205,6 +240,53 @@ export async function POST(request: NextRequest) {
     generationResult.validation.warnings,
   )
 
+  // ── Step 5: GitHub commit (non-fatal) ─────────────────────────────────────
+  // Read the written file contents from project_files table and commit to GitHub.
+  let commitSha: string | null = null
+  let commitUrl: string | null = null
+  let deployTriggered = false
+
+  try {
+    const admin = createAdminSupabaseClient()
+    const { data: projectFiles } = await admin
+      .from('project_files')
+      .select('file_path, content')
+      .eq('project_id', project_id)
+      .in('file_path', patchResult.files_modified)
+
+    if (projectFiles && projectFiles.length > 0) {
+      const commitMessage =
+        `[BuildOS] Agent ${agent_role} — task ${task_id.slice(0, 8)}\n\n` +
+        `Files: ${patchResult.files_modified.join(', ')}\n` +
+        `Operations: ${patchResult.applied_operations}`
+
+      const commitResult = await commitFilesToGitHub(
+        projectFiles.map(f => ({ path: f.file_path, content: f.content })),
+        commitMessage,
+      )
+
+      if (commitResult.success) {
+        commitSha = commitResult.commitSha ?? null
+        commitUrl = commitResult.commitUrl ?? null
+
+        // Log commit — generation_status stays 'files_written' (no 'committed' status in schema)
+        console.log(`[agent/generate] GitHub commit: ${commitSha?.slice(0, 8)} — ${patchResult.files_modified.join(', ')}`)
+
+        // ── Step 6: Vercel deploy hook (non-fatal) ────────────────────────────
+        const deployResult = await triggerVercelDeploy()
+        deployTriggered = deployResult.triggered
+        if (!deployResult.triggered) {
+          console.warn('[agent/generate] Deploy hook skipped:', deployResult.error)
+        }
+      } else {
+        console.warn('[agent/generate] GitHub commit skipped:', commitResult.error)
+      }
+    }
+  } catch (err) {
+    // Non-fatal: commit failure never blocks file-write success
+    console.error('[agent/generate] Post-write commit error (non-fatal):', err)
+  }
+
   return NextResponse.json({
     success: true,
     generation_status: 'files_written' as GenerationStatus,
@@ -213,5 +295,7 @@ export async function POST(request: NextRequest) {
     language: generationResult.language,
     summary: generationResult.summary,
     warnings: generationResult.validation.warnings,
+    ...(commitSha ? { commit_sha: commitSha, commit_url: commitUrl } : {}),
+    deploy_triggered: deployTriggered,
   })
 }

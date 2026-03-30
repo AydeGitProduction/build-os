@@ -1,0 +1,526 @@
+{
+  "name": "buildos_dispatch_task",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-dispatch-task",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook \u2014 Task Dispatch",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "buildos-dispatch-task"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and extract dispatch payload\nconst payload = $json.body || $json;\n\nif (!payload.task_id || !payload.task_run_id) {\n  throw new Error('Missing required fields: task_id, task_run_id');\n}\n\n// Map agent_role to execution strategy\n// PATCH: max_tokens capped at 2048 to prevent n8n cloud execution timeout\n// Context payloads with large Task Contracts (3000-4500 tokens) + high max_tokens caused\n// n8n cloud to timeout at ~300-600s before returning. Root cause: 2026-03-29 ERT-P1 incident.\nconst AGENT_PROFILES = {\n  orchestrator:         { model: 'claude-opus-4-6',   max_tokens: 2048, temperature: 0.2 },\n  architect:            { model: 'claude-opus-4-6',   max_tokens: 2048, temperature: 0.1 },\n  product_analyst:      { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.3 },\n  backend_engineer:     { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.1 },\n  frontend_engineer:    { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.2 },\n  automation_engineer:  { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.1 },\n  integration_engineer: { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.1 },\n  qa_security_auditor:  { model: 'claude-opus-4-6',   max_tokens: 2048, temperature: 0.0 },\n  documentation_engineer: { model: 'claude-haiku-4-5-20251001', max_tokens: 2048, temperature: 0.3 },\n  cost_analyst:         { model: 'claude-haiku-4-5-20251001', max_tokens: 2048, temperature: 0.1 },\n  recommendation_analyst: { model: 'claude-sonnet-4-6', max_tokens: 2048, temperature: 0.2 },\n  release_manager:      { model: 'claude-opus-4-6',   max_tokens: 2048, temperature: 0.0 },\n};\n\nconst profile = AGENT_PROFILES[payload.agent_role] || AGENT_PROFILES['orchestrator'];\n\n// PATCH: Truncate context_payload to prevent timeout\n// Full context_payload (9-field Task Contracts) can be 3000-4500 tokens.\n// We extract only the critical fields needed for the Claude prompt.\nfunction truncateContextPayload(cp) {\n  if (!cp || typeof cp !== 'object') return '';\n  const tc = cp.task_contract || cp;\n  const objective = (tc.objective || cp.objective || '').slice(0, 300);\n  const impl = Array.isArray(tc.implementation_plan)\n    ? tc.implementation_plan.slice(0, 4).map(s => String(s).slice(0, 100)).join('\\n- ')\n    : (tc.implementation_plan || '').slice(0, 400);\n  const expected = (tc.expected_output || cp.expected_output || '').slice(0, 200);\n  const acceptance = Array.isArray(tc.acceptance_criteria)\n    ? tc.acceptance_criteria.slice(0, 3).join('; ').slice(0, 200)\n    : '';\n  return [\n    objective ? `Objective: ${objective}` : '',\n    impl ? `Implementation:\\n- ${impl}` : '',\n    expected ? `Expected: ${expected}` : '',\n    acceptance ? `Acceptance: ${acceptance}` : '',\n  ].filter(Boolean).join('\\n\\n').slice(0, 900);\n}\n\nconst truncatedContext = truncateContextPayload(payload.context_payload);\n\n\n// P0 CODE GEN: flag code-type tasks so downstream nodes change prompts + call generate\nconst needsCodeGen = ['code', 'schema', 'test'].includes(payload.task_type || '');\n\nconst systemPrompt = needsCodeGen\n  ? `You are a ${payload.agent_role} in the Build OS system. Write the implementation files exactly as described. Output ONLY fenced code blocks, each with a filename comment as the very first line. No JSON wrappers, no extra explanation.`\n  : `You are a ${payload.agent_role} agent in the Build OS system. Your task is to execute the work described and return a structured JSON output matching the expected schema for task_type: ${payload.task_type}. Be precise and complete.`;\n\nconst codeInstructions = needsCodeGen\n  ? `IMPORTANT: Return your implementation as fenced code blocks ONLY.\\nEach block MUST have a filename comment as its first line, e.g.:\\n\\`\\`\\`typescript\\n// src/lib/wizard-state.ts\\n// implementation here\\n\\`\\`\\`\\nSupported comment styles: // (TS/JS), # (Python/Bash), -- (SQL).`\n  : `Return your output as JSON matching the schema for task_type: ${payload.task_type || 'document'}`;\nreturn {\n  ...payload,\n  agent_profile: profile,\n  context_payload_truncated: truncatedContext,\n  started_at: new Date().toISOString(),\n  needsCodeGen,\n  systemPrompt,\n  codeInstructions,\n};"
+      },
+      "id": "validate_payload",
+      "name": "Validate + Route",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.agent_role }}",
+              "value2": "qa_security_auditor"
+            }
+          ]
+        }
+      },
+      "id": "route_agent_type",
+      "name": "Route: QA or Standard?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "={{ $json.agent_profile.model }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $json.agent_profile.max_tokens }}"
+            },
+            {
+              "name": "system",
+              "value": "={{ $json.systemPrompt }}"
+            },
+            {
+              "name": "messages",
+              "value": "=[{ \"role\": \"user\", \"content\": \"Task: {{ $json.task_name }}\\n\\nDescription: {{ $json.description }}\\n\\n{{ $json.context_payload_truncated }}\\n\\n{{ $json.codeInstructions }}\" }]"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "call_ai_agent",
+      "name": "Call AI Agent (Anthropic)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 12000,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-opus-4-6"
+            },
+            {
+              "name": "max_tokens",
+              "value": "4096"
+            },
+            {
+              "name": "system",
+              "value": "You are a QA Security Auditor. Review the task and return a JSON qa_verdict with: { passed: boolean, checks: [{ name, passed, notes }], overall_notes: string }."
+            },
+            {
+              "name": "messages",
+              "value": "=[{ \"role\": \"user\", \"content\": \"Review task: {{ $json.task_name }}\\n\\nDescription: {{ $json.description }}\\n\\nContext: {{ JSON.stringify($json.context_payload) }}\" }]"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "call_qa_agent",
+      "name": "Call QA Agent (Anthropic)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 12000,
+      "position": [
+        900,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI response and extract output + cost metrics\nconst aiResponse = $json;\n\n// P0: Preserve raw Claude text for code extraction\nconst rawAgentText = $json.content?.[0]?.text || '';\n\n\nlet parsedOutput = null;\nlet outputType = $('Validate + Route').first().json.task_type || 'document';\nlet success = true;\nlet errorMsg = null;\n\ntry {\n  const content = aiResponse.content?.[0]?.text || '';\n  // Try to extract JSON from response\n  const jsonMatch = content.match(/```json\\n([\\s\\S]*?)\\n```/) || \n                    content.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    parsedOutput = JSON.parse(jsonMatch[1] || jsonMatch[0]);\n  } else {\n    // Treat as document output\n    parsedOutput = { content, format: 'markdown' };\n    outputType = 'document';\n  }\n} catch (e) {\n  success = false;\n  errorMsg = `Failed to parse AI output: ${e.message}`;\n}\n\n// Extract cost from usage metrics\nconst usage = aiResponse.usage || {};\nconst inputTokens = usage.input_tokens || 0;\nconst outputTokens = usage.output_tokens || 0;\nconst totalTokens = inputTokens + outputTokens;\n\n// Approximate cost (Claude Sonnet 4 pricing)\nconst costUsd = (inputTokens * 0.000003) + (outputTokens * 0.000015);\n\nconst dispatchPayload = $('Validate + Route').first().json;\n\nreturn {\n  task_id: dispatchPayload.task_id,\n  task_run_id: dispatchPayload.task_run_id,\n  agent_role: dispatchPayload.agent_role,\n  output_type: outputType,\n  output: parsedOutput,\n  success,\n  error_message: errorMsg,\n  tokens_used: totalTokens,\n  model_id: aiResponse.model || dispatchPayload.agent_profile.model,\n  cost_usd: Math.round(costUsd * 100000) / 100000,\n  idempotency_key: dispatchPayload.idempotency_key || `agent_output:${dispatchPayload.task_run_id}`,\n  rawAgentText,\n};"
+      },
+      "id": "parse_ai_response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Validate + Route').first().json.callback_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Buildos-Secret",
+              "value": "={{ $env.BUILDOS_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "post_agent_output",
+      "name": "POST \u2192 /api/agent/output",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1340,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.statusCode || 200 }}",
+              "operation": "smallerEqual",
+              "value2": 299
+            }
+          ]
+        }
+      },
+      "id": "check_callback_success",
+      "name": "Callback OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create blocker on callback failure\nconst dispatchPayload = $('Validate + Route').first().json;\nreturn {\n  task_id: dispatchPayload.task_id,\n  description: `Agent output callback failed after execution. Manual intervention required.`,\n  severity: 'critical',\n  task_run_id: dispatchPayload.task_run_id,\n};"
+      },
+      "id": "prepare_blocker",
+      "name": "Prepare Blocker",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Validate + Route').first().json.callback_url.replace('/agent/output', '/blockers') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Buildos-Secret",
+              "value": "={{ $env.BUILDOS_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "create_blocker",
+      "name": "POST \u2192 /api/blockers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"task_run_id\": \"{{ $('Validate + Route').first().json.task_run_id }}\" }"
+      },
+      "id": "respond_ok",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $('Validate + Route').first().json.needsCodeGen === true && $json.success !== false }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "should_generate_code",
+      "name": "Code task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Assemble the /api/agent/generate payload\nconst dispatchData = $('Validate + Route').first().json;\nconst parseData = $('Parse AI Response').first().json;\nconst callbackData = $('POST \\u2192 /api/agent/output').first().json;\n\n// agent_output_id from the /api/agent/output response body\nconst agentOutputId = callbackData?.data?.agent_output_id || null;\n\nif (!agentOutputId) {\n  throw new Error('No agent_output_id returned from /api/agent/output \u2014 cannot call generate');\n}\n\n// Use rawAgentText (the actual Claude response text, not the parsed JSON wrapper)\nconst rawOutput = parseData.rawAgentText || '';\n\nreturn {\n  project_id: dispatchData.project_id,\n  task_id: dispatchData.task_id,\n  agent_output_id: agentOutputId,\n  agent_role: dispatchData.agent_role,\n  raw_output: rawOutput,\n  callback_url: dispatchData.callback_url,\n};"
+      },
+      "id": "prep_generate_payload",
+      "name": "Prep Generate Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callback_url.replace('/agent/output', '/agent/generate') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Buildos-Secret",
+              "value": "={{ $env.BUILDOS_WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ project_id: $json.project_id, task_id: $json.task_id, agent_output_id: $json.agent_output_id, agent_role: $json.agent_role, raw_output: $json.raw_output }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "post_agent_generate",
+      "name": "POST \u2192 /api/agent/generate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "continueOnFail": true,
+      "position": [
+        2220,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook \u2014 Task Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Validate + Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate + Route": {
+      "main": [
+        [
+          {
+            "node": "Route: QA or Standard?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route: QA or Standard?": {
+      "main": [
+        [
+          {
+            "node": "Call AI Agent (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call QA Agent (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call AI Agent (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call QA Agent (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "POST \u2192 /api/agent/output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST \u2192 /api/agent/output": {
+      "main": [
+        [
+          {
+            "node": "Callback OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback OK?": {
+      "main": [
+        [
+          {
+            "node": "Code task?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Blocker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Blocker": {
+      "main": [
+        [
+          {
+            "node": "POST \u2192 /api/blockers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code task?": {
+      "main": [
+        [
+          {
+            "node": "Prep Generate Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Generate Payload": {
+      "main": [
+        [
+          {
+            "node": "POST \u2192 /api/agent/generate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST \u2192 /api/agent/generate": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "buildos",
+    "agent",
+    "execution"
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-29T21:35:00.000Z",
+  "versionId": "phase4-v2-retry"
+}
