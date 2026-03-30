@@ -114,9 +114,18 @@ function normalizePrivateKeyPem(raw: string): string {
  *      explicit type — { format: 'der', type: 'pkcs1' } works on OpenSSL 3.
  */
 function loadPrivateKey(normalizedPem: string) {
+  // Diagnostic log (no sensitive data)
+  console.log(
+    `[github-provision] key-diag: len=${normalizedPem.length}` +
+    ` hasBegin=${normalizedPem.includes("-----BEGIN")}` +
+    ` isRSA=${normalizedPem.includes("BEGIN RSA")}` +
+    ` isPKCS8=${normalizedPem.includes("BEGIN PRIVATE KEY")}` +
+    ` firstBytes=${Buffer.from(normalizedPem.slice(0, 4)).toString("hex")}`
+  );
   try {
     return createPrivateKey(normalizedPem);
-  } catch {
+  } catch (e1) {
+    console.log(`[github-provision] PEM load failed: ${e1 instanceof Error ? e1.message : String(e1)}`);
     // Fallback: strip PEM headers, base64-decode to DER, load with explicit type
     const b64 = normalizedPem
       .replace(/-----BEGIN[^-]+-----/g, "")
