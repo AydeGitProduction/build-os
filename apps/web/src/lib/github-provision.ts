@@ -309,9 +309,27 @@ export async function provisionGitHubRepo(
   return withRetry(async (attempt) => {
     const token = await resolveGitHubToken();
 
-    const createUrl = `https://api.github.com/orgs/${encodeURIComponent(org)}/repos`;
+    // Determine if owner is an org or user — use correct endpoint for each
+    const isOrgResult = await fetch(
+      `https://api.github.com/orgs/${encodeURIComponent(org)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+    const isOrg = isOrgResult.ok;
 
-    console.log(`[github-provision] Creating repo ${org}/${repoName} (attempt ${attempt + 1})`);
+    // For orgs: POST /orgs/{org}/repos  — For users: POST /user/repos
+    const createUrl = isOrg
+      ? `https://api.github.com/orgs/${encodeURIComponent(org)}/repos`
+      : `https://api.github.com/user/repos`;
+
+    console.log(
+      `[github-provision] Creating repo ${org}/${repoName} via ${isOrg ? "org" : "user"} endpoint (attempt ${attempt + 1})`
+    );
 
     const createResponse = await fetch(createUrl, {
       method: "POST",
