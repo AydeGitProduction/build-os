@@ -185,6 +185,10 @@ export function IrisWorkspace({ userId: _userId }: IrisWorkspaceProps) {
       if (s.messages) {
         setMessages(s.messages.map((m: IrisMessage) => ({ ...m, timestamp: new Date(m.timestamp) })))
       }
+      // Rebuild partial preview so the panel isn't blank on reload
+      if (s.firstUserMsg && s.readiness > 0) {
+        setPreviewData(partialPreview(s.firstUserMsg, s.readiness, s.assumptionStatuses || {}))
+      }
     } catch { /* ignore */ }
   }, [projectId])
 
