@@ -162,6 +162,23 @@ function normalizeLanguage(lang: string): SupportedLanguage {
   return valid.includes(lower as SupportedLanguage) ? (lower as SupportedLanguage) : 'unknown'
 }
 
+// Monorepo path prefixes to strip when agents return full workspace-relative paths.
+// e.g. "apps/web/src/lib/foo.ts" → "src/lib/foo.ts"
+const MONOREPO_STRIP_PREFIXES = [
+  'apps/web/',
+  'app/web/',
+  'packages/web/',
+]
+
+function stripMonorepoPrefix(filePath: string): string {
+  for (const prefix of MONOREPO_STRIP_PREFIXES) {
+    if (filePath.startsWith(prefix)) {
+      return filePath.slice(prefix.length)
+    }
+  }
+  return filePath
+}
+
 // Extract filename from comment in first line of code block
 // Looks for patterns like: `// src/lib/foo.ts` or `# src/lib/foo.py`
 function extractFilenameFromCode(code: string): string | null {
@@ -174,7 +191,7 @@ function extractFilenameFromCode(code: string): string | null {
   ]
   for (const pattern of patterns) {
     const match = firstLine.match(pattern)
-    if (match) return match[1]
+    if (match) return stripMonorepoPrefix(match[1])
   }
   return null
 }
@@ -367,9 +384,10 @@ function tryExtractCodeBlocksFromJson(rawOutput: string): ExtractedCodeBlock[] {
 
   return entries
     .map((e, i): ExtractedCodeBlock | null => {
-      const filePath = e.path ?? e.file_path ?? e.filePath
+      const rawPath = e.path ?? e.file_path ?? e.filePath
       const content = e.content ?? e.code ?? e.body
-      if (!filePath || !content) return null
+      if (!rawPath || !content) return null
+      const filePath = stripMonorepoPrefix(rawPath)
       const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
       const lang = normalizeLanguage(ext)
       return {
