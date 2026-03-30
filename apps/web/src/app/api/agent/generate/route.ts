@@ -147,15 +147,32 @@ export async function POST(request: NextRequest) {
   // Mark as generating
   await updateGenerationStatus(supabase, agent_output_id, 'generating')
 
-  // Step 1: Parse agent output → PatchOperations
+  // Step 1: Auto-detect existing file paths so patch engine uses UPDATE not CREATE
+  let resolvedExistingPaths: string[] = existing_file_paths ?? []
+  if (resolvedExistingPaths.length === 0) {
+    try {
+      const adminForCheck = createAdminSupabaseClient()
+      const { data: existingFiles } = await adminForCheck
+        .from('project_files')
+        .select('file_path')
+        .eq('project_id', project_id)
+      if (existingFiles && existingFiles.length > 0) {
+        resolvedExistingPaths = existingFiles.map(f => f.file_path)
+      }
+    } catch {
+      // non-fatal — fall back to empty (all will be CREATE)
+    }
+  }
+
+  // Step 2: Parse agent output → PatchOperations
   const generationResult = parseAgentOutputToOperations({
     rawAgentOutput: raw_output,
     agentRole: agent_role,
     taskId: task_id,
-    existingFilePaths: existing_file_paths ?? [],
+    existingFilePaths: resolvedExistingPaths,
   })
 
-  // Step 2: Validation gate — abort if parsing errors
+  // Step 3: Validation gate — abort if parsing errors
   if (!generationResult.validation.valid) {
     await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
       generation_errors: generationResult.validation.errors,
@@ -245,6 +262,9 @@ export async function POST(request: NextRequest) {
   let commitSha: string | null = null
   let commitUrl: string | null = null
   let deployTriggered = false
+  let deployUrl: string | null = null
+  let commitError: string | null = null
+  let deployError: string | null = null
 
   try {
     const admin = createAdminSupabaseClient()
@@ -275,16 +295,23 @@ export async function POST(request: NextRequest) {
         // ── Step 6: Vercel deploy hook (non-fatal) ────────────────────────────
         const deployResult = await triggerVercelDeploy()
         deployTriggered = deployResult.triggered
+        deployUrl = deployResult.deploymentUrl ?? null
         if (!deployResult.triggered) {
-          console.warn('[agent/generate] Deploy hook skipped:', deployResult.error)
+          deployError = deployResult.error ?? 'Unknown deploy error'
+          console.warn('[agent/generate] Deploy hook skipped:', deployError)
         }
       } else {
-        console.warn('[agent/generate] GitHub commit skipped:', commitResult.error)
+        commitError = commitResult.error ?? 'Unknown commit error'
+        console.warn('[agent/generate] GitHub commit skipped:', commitError)
       }
+    } else {
+      commitError = `project_files returned ${projectFiles?.length ?? 0} rows for paths: ${patchResult.files_modified.join(', ')}`
+      console.warn('[agent/generate] No project_files found for commit:', commitError)
     }
   } catch (err) {
     // Non-fatal: commit failure never blocks file-write success
-    console.error('[agent/generate] Post-write commit error (non-fatal):', err)
+    commitError = err instanceof Error ? err.message : String(err)
+    console.error('[agent/generate] Post-write commit error (non-fatal):', commitError)
   }
 
   return NextResponse.json({
@@ -296,6 +323,9 @@ export async function POST(request: NextRequest) {
     summary: generationResult.summary,
     warnings: generationResult.validation.warnings,
     ...(commitSha ? { commit_sha: commitSha, commit_url: commitUrl } : {}),
+    ...(commitError ? { commit_error: commitError } : {}),
     deploy_triggered: deployTriggered,
+    ...(deployUrl ? { deploy_url: deployUrl } : {}),
+    ...(deployError ? { deploy_error: deployError } : {}),
   })
 }

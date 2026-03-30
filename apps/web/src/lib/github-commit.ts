@@ -126,7 +126,8 @@ export async function commitFilesToGitHub(
   // ── 1. Config validation ───────────────────────────────────────────────────
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
-  const installationId = process.env.GITHUB_INSTALLATION_ID
+  // Support both naming conventions: GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
+  const installationId = process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID
   const owner = process.env.GITHUB_REPO_OWNER
   const repo = process.env.GITHUB_REPO_NAME
   const branch = process.env.GITHUB_REPO_BRANCH || 'master'
@@ -134,7 +135,7 @@ export async function commitFilesToGitHub(
   const missing = [
     !appId && 'GITHUB_APP_ID',
     !rawKey && 'GITHUB_APP_PRIVATE_KEY',
-    !installationId && 'GITHUB_INSTALLATION_ID',
+    !installationId && 'GITHUB_INSTALLATION_ID (or GITHUB_APP_INSTALLATION_ID)',
     !owner && 'GITHUB_REPO_OWNER',
     !repo && 'GITHUB_REPO_NAME',
   ].filter(Boolean)
@@ -218,22 +219,66 @@ export async function commitFilesToGitHub(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Vercel deploy hook trigger
+// Vercel deploy trigger (supports both deploy hook URL and Deployments API)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function triggerVercelDeploy(): Promise<{ triggered: boolean; error?: string }> {
+export async function triggerVercelDeploy(): Promise<{ triggered: boolean; deploymentUrl?: string; error?: string }> {
+  // Strategy 1: deploy hook URL (simple POST)
   const hookUrl = process.env.VERCEL_DEPLOY_HOOK_URL
-  if (!hookUrl) {
-    return { triggered: false, error: 'VERCEL_DEPLOY_HOOK_URL not configured' }
+  if (hookUrl) {
+    try {
+      const res = await fetch(hookUrl, { method: 'POST' })
+      if (res.ok) {
+        console.log('[github-commit] Vercel deploy hook triggered')
+        return { triggered: true }
+      }
+    } catch {
+      // fall through to Strategy 2
+    }
+  }
+
+  // Strategy 2: Vercel Deployments API — redeploy latest production deployment
+  const vercelToken = process.env.VERCEL_API_TOKEN
+  const projectId   = process.env.VERCEL_PROJECT_ID
+  const teamId      = process.env.VERCEL_TEAM_ID
+
+  if (!vercelToken || !projectId) {
+    return { triggered: false, error: 'No VERCEL_DEPLOY_HOOK_URL, VERCEL_API_TOKEN, or VERCEL_PROJECT_ID configured' }
   }
 
   try {
-    const res = await fetch(hookUrl, { method: 'POST' })
-    if (!res.ok) {
-      return { triggered: false, error: `Deploy hook returned ${res.status}` }
+    // Get latest READY production deployment
+    const teamParam = teamId ? `&teamId=${teamId}` : ''
+    const listRes = await fetch(
+      `https://api.vercel.com/v6/deployments?projectId=${projectId}&limit=1&state=READY&target=production${teamParam}`,
+      { headers: { Authorization: `Bearer ${vercelToken}` } },
+    )
+    if (!listRes.ok) {
+      return { triggered: false, error: `Cannot list deployments: ${listRes.status}` }
     }
-    console.log('[github-commit] Vercel deploy hook triggered')
-    return { triggered: true }
+    const listData = (await listRes.json()) as { deployments: { uid: string; url: string }[] }
+    const latest = listData.deployments?.[0]
+    if (!latest) {
+      return { triggered: false, error: 'No existing production deployment found to redeploy' }
+    }
+
+    // Trigger redeploy
+    const redeployRes = await fetch(
+      `https://api.vercel.com/v13/deployments?forceNew=1${teamParam}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${vercelToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deploymentId: latest.uid, name: 'web', target: 'production' }),
+      },
+    )
+    if (!redeployRes.ok) {
+      const errBody = await redeployRes.text()
+      return { triggered: false, error: `Redeploy API returned ${redeployRes.status}: ${errBody.slice(0, 200)}` }
+    }
+    const redeployData = (await redeployRes.json()) as { id: string; url: string }
+    const deployUrl = `https://${redeployData.url}`
+    console.log(`[github-commit] Vercel redeploy triggered → ${deployUrl}`)
+    return { triggered: true, deploymentUrl: deployUrl }
   } catch (err) {
     return { triggered: false, error: err instanceof Error ? err.message : String(err) }
   }

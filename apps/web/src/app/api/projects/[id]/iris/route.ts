@@ -219,24 +219,42 @@ export async function POST(
       // Save answers — delete old answers first then re-insert (cleaner than conflict detection)
       await admin.from('answers').delete().eq('questionnaire_id', questionnaire.id)
 
+      // answers table schema: { questionnaire_id, question_id, value (jsonb), answered_by }
       const answerRows = Object.entries(answersMap).map(([question_id, answer_value]) => ({
         questionnaire_id: questionnaire!.id,
         question_id,
-        answer_value: String(answer_value),
+        value: String(answer_value),   // column is named "value" (jsonb), NOT "answer_value"
         answered_by: user.id,
       }))
 
-      await admin.from('answers').insert(answerRows)
+      const { error: answersErr } = await admin.from('answers').insert(answerRows)
+      if (answersErr) {
+        console.error('Answers insert failed:', answersErr.message, answersErr.code)
+        // Non-fatal: return complete:true so the UI doesn't hang, but log the failure
+        // The blueprint route will generate with empty answers (defaults) rather than blocking the user
+      }
 
-      // Trigger blueprint generation
+      // Trigger blueprint generation via internal secret — avoids cookie-forwarding auth fragility
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+      const internalSecret = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || ''
       try {
-        await fetch(`${appUrl}/api/projects/${params.id}/blueprint`, {
+        const bpRes = await fetch(`${appUrl}/api/projects/${params.id}/blueprint`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Cookie': request.headers.get('cookie') || '' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Buildos-Secret': internalSecret,
+            'Cookie': request.headers.get('cookie') || '',
+          },
           body: JSON.stringify({}),
         })
-      } catch { /* non-fatal — UI will trigger this */ }
+        if (!bpRes.ok) {
+          const bpErr = await bpRes.text().catch(() => '')
+          console.error('Blueprint trigger failed:', bpRes.status, bpErr)
+        }
+      } catch (bpEx) {
+        console.error('Blueprint trigger exception:', bpEx)
+        /* non-fatal — UI polls and will retry */
+      }
 
       const closingMessage = `Perfect — I now have everything I need. Your blueprint is generating now. I'll architect your ${gathered.product_name || project.name} as a ${gathered.monetisation || 'subscription'}-based ${project.project_type} — let's build it.`
 
