@@ -278,7 +278,15 @@ export async function POST(request: NextRequest) {
     // ── 8b. Shadow dispatch to Railway (ERT-P6A) ─────────────────────────────
     // When SHADOW_MODE=true: also dispatch to Railway job_queue in parallel.
     // This is FIRE-AND-FORGET — Railway failure never affects the primary path.
-    // Vercel/n8n result remains authoritative.
+    // n8n result remains authoritative.
+    //
+    // SOURCE LABELING CONVENTION (critical for /api/agent/output routing):
+    //   Primary (n8n)  idempotency_key = "agent_output:{task_run_id}"
+    //   Shadow (Railway) idempotency_key = "shadow:railway:{task_run_id}"
+    //
+    // /api/agent/output reads body.idempotency_key. If it starts with "shadow:",
+    // the entire request is redirected to the shadow_results table — task.status
+    // is NEVER modified. This is the enforcement point for shadow isolation.
     if (process.env.SHADOW_MODE === 'true') {
       const railwayPayload = {
         correlation_id: randomUUID(),
@@ -292,6 +300,7 @@ export async function POST(request: NextRequest) {
         description: payload.description,
         context_payload: payload.context_payload as Record<string, unknown>,
         callback_url: payload.callback_url,
+        // "shadow:" prefix is REQUIRED — agent/output uses it for source detection
         idempotency_key: `shadow:railway:${taskRunId}`,
         retry_count: 0,
       }

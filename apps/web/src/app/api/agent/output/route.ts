@@ -19,6 +19,21 @@
  *  11. Complete idempotency
  *
  * Auth: accepts both user JWT AND internal webhook secret.
+ *
+ * ── SHADOW MODE SAFETY ────────────────────────────────────────────────────────
+ * When SHADOW_MODE=true, Railway (shadow) and n8n (primary) both process every
+ * task and both call back to this endpoint. Only primary (n8n) results are
+ * authoritative. Shadow results are isolated to the shadow_results table and
+ * NEVER affect task.status.
+ *
+ * Source detection: body.idempotency_key prefix
+ *   "shadow:..." → Railway shadow (non-authoritative) → log only, return early
+ *   "agent_output:..." → n8n primary (authoritative) → full processing pipeline
+ *
+ * Primary recovery: if a prior shadow failure raced ahead and set task to
+ * "blocked", and the primary now succeeds, we force-recover the task to
+ * "awaiting_review". This is the single exception to the isValidTransition
+ * gate — it corrects a non-authoritative state, not a legitimate failure.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -78,7 +93,66 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'task_id and task_run_id are required' }, { status: 400 })
     }
 
-    idempotencyKey = body.idempotency_key || `agent_output:${task_run_id}`
+    // ── SHADOW SOURCE DETECTION ───────────────────────────────────────────────
+    // idempotency_key prefix identifies the execution source:
+    //   "shadow:..."       → Railway shadow worker (NON-AUTHORITATIVE)
+    //   "agent_output:..." → n8n primary executor  (AUTHORITATIVE)
+    //   anything else      → treat as primary (safe default)
+    //
+    // Railway dispatch sets idempotency_key = "shadow:railway:{task_run_id}"
+    // n8n dispatch sets    idempotency_key = "agent_output:{task_run_id}"
+    const rawIdempotencyKey = (body.idempotency_key as string | undefined) || ''
+    const isShadowCallback = rawIdempotencyKey.startsWith('shadow:')
+
+    if (isShadowCallback) {
+      // ── SHADOW PATH: log only, never touch task state ─────────────────────
+      // Railway result is stored in shadow_results for observability and
+      // reconciliation, but task.status is NEVER changed from here.
+      const shadowSource = rawIdempotencyKey.includes('railway') ? 'railway' : 'shadow_worker'
+
+      try {
+        await admin.from('shadow_results').insert({
+          task_id,
+          task_run_id,
+          source: shadowSource,
+          idempotency_key: rawIdempotencyKey,
+          success: success ?? false,
+          error_message: error_message || null,
+          output_type: output_type || null,
+          output_summary: output ? JSON.stringify(output).slice(0, 500) : null,
+          raw_payload: {
+            agent_role: agent_role || null,
+            tokens_used: tokens_used || null,
+            model_id: model_id || null,
+            cost_usd: cost_usd || null,
+          },
+        })
+        console.log(
+          `[agent/output] Shadow result logged: source=${shadowSource} task=${task_id} success=${success}`
+        )
+      } catch (err) {
+        // Non-fatal: shadow logging failure must never block anything
+        console.warn('[agent/output] shadow_results insert failed (non-fatal):', err)
+      }
+
+      return NextResponse.json(
+        {
+          data: {
+            shadow: true,
+            source: shadowSource,
+            task_id,
+            task_run_id,
+            logged: true,
+          },
+          message: 'Shadow result logged. Task state not modified.',
+        },
+        { status: 200 }
+      )
+    }
+
+    // ── PRIMARY PATH: full processing pipeline ────────────────────────────────
+
+    idempotencyKey = rawIdempotencyKey || `agent_output:${task_run_id}`
     operation = 'ingest_agent_output'
 
     // Nil UUID used for system-initiated calls where no real user_id is available.
@@ -147,7 +221,36 @@ export async function POST(request: NextRequest) {
     const newTaskStatus = success ? 'awaiting_review' : 'blocked'
     const oldStatus = task.status
 
-    if (isValidTransition(oldStatus, newTaskStatus)) {
+    // ── PRIMARY RECOVERY: shadow race condition override ──────────────────────
+    // If this is a successful primary callback but the task is already "blocked",
+    // the block was caused by a shadow (Railway) failure that arrived first.
+    // Shadow results are non-authoritative — we must override the blocked state.
+    //
+    // Safety conditions (all must hold):
+    //   1. success = true  (primary reports success)
+    //   2. oldStatus = "blocked"  (task was blocked by the shadow race)
+    //   3. This is the primary path (isShadowCallback = false, already confirmed above)
+    //
+    // We force the task directly to awaiting_review, bypassing isValidTransition.
+    // This is intentional: the blocked state was never a legitimate failure.
+    const isShadowRaceRecovery = success === true && oldStatus === 'blocked'
+
+    if (isShadowRaceRecovery) {
+      console.log(
+        `[agent/output] Shadow race recovery: task ${task_id} unblocked by primary success. ` +
+        `Overriding blocked→awaiting_review.`
+      )
+      await admin
+        .from('tasks')
+        .update({
+          status: 'awaiting_review',
+          actual_cost_usd: cost_usd || null,
+          completed_at: null,
+          failure_detail: null,
+          failure_category: null,
+        })
+        .eq('id', task_id)
+    } else if (isValidTransition(oldStatus, newTaskStatus)) {
       await admin
         .from('tasks')
         .update({
@@ -157,6 +260,9 @@ export async function POST(request: NextRequest) {
         })
         .eq('id', task_id)
     }
+
+    // The effective new status (for downstream steps and audit log)
+    const effectiveNewStatus = isShadowRaceRecovery ? 'awaiting_review' : newTaskStatus
 
     // ── 7. Update task_run ────────────────────────────────────────────────────
     await admin
@@ -273,7 +379,10 @@ export async function POST(request: NextRequest) {
       resource_type: 'task',
       resource_id: task_id,
       old_value: { status: oldStatus },
-      new_value: { status: newTaskStatus },
+      new_value: {
+        status: effectiveNewStatus,
+        ...(isShadowRaceRecovery ? { recovery_reason: 'shadow_race_override' } : {}),
+      },
       metadata: {
         task_run_id,
         output_type,
@@ -281,6 +390,7 @@ export async function POST(request: NextRequest) {
         cost_usd,
         tokens_used,
         model_id,
+        shadow_race_recovery: isShadowRaceRecovery,
       },
     })
 
@@ -288,8 +398,9 @@ export async function POST(request: NextRequest) {
       task_id,
       task_run_id,
       agent_output_id: agentOutput.id,
-      new_task_status: newTaskStatus,
+      new_task_status: effectiveNewStatus,
       success,
+      shadow_race_recovery: isShadowRaceRecovery,
     }
 
     await completeIdempotency(admin, idempotencyKey, operation, result, true)

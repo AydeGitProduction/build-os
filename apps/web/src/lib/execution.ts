@@ -286,6 +286,16 @@ export function validateAgentOutput(
 }
 
 // ─── Task Run State Machine ───────────────────────────────────────────────────
+//
+// SHADOW MODE NOTE:
+// The "blocked" state can be set non-authoritatively when a shadow (Railway)
+// execution fails before the primary (n8n) execution completes. In that scenario,
+// the primary's success callback must be able to override the blocked state.
+//
+// This is handled in /api/agent/output via isShadowRaceRecovery — which bypasses
+// isValidTransition and forces blocked → awaiting_review directly. Do NOT add
+// blocked → awaiting_review to the general transition map; that would allow any
+// code path to unblock a task, including legitimate failure states.
 
 export const TASK_STATUS_TRANSITIONS: Record<string, string[]> = {
   pending:         ['ready', 'cancelled'],
@@ -302,6 +312,18 @@ export const TASK_STATUS_TRANSITIONS: Record<string, string[]> = {
 
 export function isValidTransition(from: string, to: string): boolean {
   return (TASK_STATUS_TRANSITIONS[from] || []).includes(to)
+}
+
+/**
+ * Returns true if the only reason this task is blocked is a shadow race condition:
+ * a Railway (shadow) failure arrived before the primary (n8n) success, setting the
+ * task to blocked before the authoritative result was received.
+ *
+ * Callers must also confirm isShadowCallback = false before using this.
+ * See /api/agent/output for the authoritative usage.
+ */
+export function isShadowRaceBlock(taskStatus: string, primarySuccess: boolean): boolean {
+  return taskStatus === 'blocked' && primarySuccess === true
 }
 
 // ─── n8n Webhook ──────────────────────────────────────────────────────────────
