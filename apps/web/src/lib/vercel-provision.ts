@@ -807,3 +807,258 @@ export async function deleteVercelProject(
     );
   }, "deleteVercelProject");
 }
+
+// === INJECTED BY G3-BE1 ===
+import { injectVercelEnvVars } from "../vercel-provision";
+
+// ---------------------------------------------------------------------------
+// Mock node-fetch
+// ---------------------------------------------------------------------------
+const mockFetch = jest.fn();
+jest.mock("node-fetch", () => mockFetch);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function makeOkResponse(body: object = {}) {
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+
+function makeErrorResponse(status: number, body = "Bad Request") {
+  return {
+    ok: false,
+    status,
+    statusText: "Error",
+    text: async () => body,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Test setup
+// ---------------------------------------------------------------------------
+const ORIGINAL_ENV = process.env;
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  process.env = {
+    ...ORIGINAL_ENV,
+    VERCEL_TOKEN: "test-vercel-token",
+    VERCEL_TEAM_ID: undefined, // default: no team
+    NEXT_PUBLIC_SUPABASE_URL: "https://supabase.example.com",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: "anon-key-123",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key-456",
+    N8N_DISPATCH_WEBHOOK_URL: "https://n8n.example.com/webhook",
+    BUILDOS_INTERNAL_SECRET: "internal-secret-789",
+    BUILDOS_SECRET: "buildos-secret-abc",
+  };
+});
+
+afterEach(() => {
+  process.env = ORIGINAL_ENV;
+});
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+describe("injectVercelEnvVars()", () => {
+  const PROJECT_ID = "prj_abc123";
+  const project = { id: "buildos-project-id-001", slug: "my-cool-app" };
+
+  it("POSTs all env vars when all passthrough vars are defined", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    // 3 static + 6 passthrough = 9 total
+    expect(mockFetch).toHaveBeenCalledTimes(9);
+  });
+
+  it("sends correct URL without teamId", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+    delete process.env.VERCEL_TEAM_ID;
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    const [url] = mockFetch.mock.calls[0] as [string, unknown];
+    expect(url).toBe(
+      `https://api.vercel.com/v10/projects/${PROJECT_ID}/env`
+    );
+    expect(url).not.toContain("teamId");
+  });
+
+  it("appends ?teamId when VERCEL_TEAM_ID is set", async () => {
+    process.env.VERCEL_TEAM_ID = "team_xyz";
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    const [url] = mockFetch.mock.calls[0] as [string, unknown];
+    expect(url).toContain("?teamId=team_xyz");
+  });
+
+  it("uses VERCEL_API_TOKEN as fallback when VERCEL_TOKEN is absent", async () => {
+    delete process.env.VERCEL_TOKEN;
+    process.env.VERCEL_API_TOKEN = "fallback-token";
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await expect(injectVercelEnvVars(PROJECT_ID, project)).resolves.toBeUndefined();
+
+    const [, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((options.headers as Record<string, string>).Authorization).toBe(
+      "Bearer fallback-token"
+    );
+  });
+
+  it("throws when no Vercel token is available", async () => {
+    delete process.env.VERCEL_TOKEN;
+    delete process.env.VERCEL_API_TOKEN;
+
+    await expect(injectVercelEnvVars(PROJECT_ID, project)).rejects.toThrow(
+      /Missing Vercel API token/
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("sends NEXT_PUBLIC_PROJECT_ID = project.id", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    const bodies = mockFetch.mock.calls.map(
+      ([, opts]: [string, { body: string }]) => JSON.parse(opts.body)
+    );
+    const entry = bodies.find((b: { key: string }) => b.key === "NEXT_PUBLIC_PROJECT_ID");
+    expect(entry).toBeDefined();
+    expect(entry.value).toBe(project.id);
+  });
+
+  it("sends PROJECT_SLUG = project.slug", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    const bodies = mockFetch.mock.calls.map(
+      ([, opts]: [string, { body: string }]) => JSON.parse(opts.body)
+    );
+    const entry = bodies.find((b: { key: string }) => b.key === "PROJECT_SLUG");
+    expect(entry).toBeDefined();
+    expect(entry.value).toBe(project.slug);
+  });
+
+  it("sends BUILDOS_PROJECT_ID = project.id", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    const bodies = mockFetch.mock.calls.map(
+      ([, opts]: [string, { body: string }]) => JSON.parse(opts.body)
+    );
+    const entry = bodies.find((b: { key: string }) => b.key === "BUILDOS_PROJECT_ID");
+    expect(entry).toBeDefined();
+    expect(entry.value).toBe(project.id);
+  });
+
+  it("sets type='encrypted' and all three targets for every var", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    for (const [, opts] of mockFetch.mock.calls as [string, { body: string }][]) {
+      const body = JSON.parse(opts.body);
+      expect(body.type).toBe("encrypted");
+      expect(body.target).toEqual(["production", "preview", "development"]);
+    }
+  });
+
+  it("sends Authorization Bearer header on every request", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    for (const [, opts] of mockFetch.mock.calls as [
+      string,
+      { headers: Record<string, string> }
+    ][]) {
+      expect(opts.headers.Authorization).toBe("Bearer test-vercel-token");
+    }
+  });
+
+  it("skips passthrough vars that are undefined in process.env", async () => {
+    delete process.env.BUILDOS_SECRET;
+    delete process.env.BUILDOS_INTERNAL_SECRET;
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    // 3 static + 4 passthrough (2 removed) = 7
+    expect(mockFetch).toHaveBeenCalledTimes(7);
+
+    const keys = mockFetch.mock.calls.map(([, opts]: [string, { body: string }]) => {
+      return JSON.parse(opts.body).key as string;
+    });
+    expect(keys).not.toContain("BUILDOS_SECRET");
+    expect(keys).not.toContain("BUILDOS_INTERNAL_SECRET");
+  });
+
+  it("still injects static vars even when all passthrough vars are missing", async () => {
+    const passthroughKeys = [
+      "NEXT_PUBLIC_SUPABASE_URL",
+      "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "N8N_DISPATCH_WEBHOOK_URL",
+      "BUILDOS_INTERNAL_SECRET",
+      "BUILDOS_SECRET",
+    ];
+    for (const k of passthroughKeys) delete process.env[k];
+
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(PROJECT_ID, project);
+
+    // Only the 3 static vars
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws a descriptive error when Vercel API returns non-2xx", async () => {
+    mockFetch
+      .mockResolvedValueOnce(makeOkResponse()) // first call succeeds
+      .mockResolvedValueOnce(makeErrorResponse(422, '{"error":"already exists"}'));
+
+    await expect(injectVercelEnvVars(PROJECT_ID, project)).rejects.toThrow(
+      /Status: 422/
+    );
+  });
+
+  it("throws error containing the failing key name", async () => {
+    // Make the NEXT_PUBLIC_PROJECT_ID call fail by controlling call order
+    mockFetch.mockResolvedValue(makeErrorResponse(500, "Internal Server Error"));
+
+    await expect(injectVercelEnvVars(PROJECT_ID, project)).rejects.toThrow(
+      new RegExp(`Vercel project "${PROJECT_ID}"`)
+    );
+  });
+
+  it("resolves with undefined (void) on success", async () => {
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    const result = await injectVercelEnvVars(PROJECT_ID, project);
+    expect(result).toBeUndefined();
+  });
+
+  it("URL-encodes the vercelProjectId in the path", async () => {
+    const weirdId = "prj_a/b&c";
+    mockFetch.mockResolvedValue(makeOkResponse());
+
+    await injectVercelEnvVars(weirdId, project);
+
+    const [url] = mockFetch.mock.calls[0] as [string, unknown];
+    expect(url).toContain(encodeURIComponent(weirdId));
+    expect(url).not.toContain("prj_a/b&c");
+  });
+});
