@@ -8,14 +8,14 @@ export const metadata = {
 }
 
 export default async function WizardPage() {
-  const supabase = createServerSupabaseClient()
+  const supabase = await createServerSupabaseClient()
   const {
-    data: { session },
-  } = await supabase.auth.getSession()
+    data: { user },
+  } = await supabase.auth.getUser()
 
-  if (!session) {
+  if (!user) {
     redirect('/login')
   }
 
-  return <IrisWorkspace userId={session.user.id} />
+  return <IrisWorkspace userId={user.id} />
 }
