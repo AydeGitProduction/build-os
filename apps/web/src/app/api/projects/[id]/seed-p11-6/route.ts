@@ -166,7 +166,7 @@ export async function POST(
             description: taskDef.description,
             slug: taskSlug,
             agent_role: taskDef.role || 'backend_engineer',
-            task_type: taskDef.task_type || 'integration_test',
+            task_type: taskDef.task_type || 'test',
             priority: taskDef.priority || 'high',
             order_index: idx,
             estimated_cost_usd: taskDef.estimated_cost_usd ?? 0.05,
