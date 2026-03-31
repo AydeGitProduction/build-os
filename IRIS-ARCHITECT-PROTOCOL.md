@@ -662,7 +662,132 @@ VERIFICATION:
 
 ---
 
-## APPENDIX — QUICK REFERENCE
+## PART 13 — THE N8N COMMIT PIPELINE (Critical: How Agents Actually Commit Code)
+
+This section documents the exact mechanism by which agent outputs become git commits. Misunderstanding this caused all P9D-FIX-2 commit failures. **Read this before creating any tasks that need code deployed.**
+
+### 13.1 — How the Pipeline Works
+
+The n8n execution pipeline:
+
+1. Receives a task from the dispatch webhook
+2. Sends the task description to Claude with a **system prompt** that specifies output format
+3. Claude returns a document with `output_type: "document"`
+4. n8n parses the output looking for this exact heading pattern:
+
+```
+## Modified File: `apps/web/src/path/to/file.tsx`
+```
+
+5. If found: n8n calls GitHub API — **GET file** (to retrieve SHA), then **PUT** to update
+6. If NOT found: task completes with `status: "completed"` but **no git commit is made**
+7. Task marked complete regardless — there is NO error for missing heading
+
+### 13.2 — The "Existing File SHA" Requirement
+
+When n8n calls GitHub API to commit a file, it uses the **"update file"** endpoint which requires the existing file's SHA. If the file does not exist:
+
+- The GET returns 404
+- The pipeline silently skips the commit
+- Task status is set to `completed` anyway
+- The agent's work is lost permanently
+
+**This means: any task that creates a NEW file will silently fail to commit.**
+
+### 13.3 — The Stub-First Rule (MANDATORY for CREATE tasks)
+
+> **Before dispatching any task that creates a new file, a stub file MUST be committed to the repo first.**
+
+A stub file is a minimal valid implementation (3-10 lines) that:
+- Exists at the exact path the task will modify
+- Is valid TypeScript/React (no syntax errors)
+- Has a comment marking it as a stub: `// STUB — will be replaced by [sprint] agent`
+- Is committed directly (not via agent) to give the file an existing SHA
+
+**Stub pattern for a page:**
+```tsx
+// STUB — will be replaced by [sprint] agent
+export default function PageName() {
+  return <div>Loading…</div>
+}
+```
+
+**Stub pattern for an API route:**
+```typescript
+// STUB — will be replaced by [sprint] agent
+import { NextRequest, NextResponse } from 'next/server'
+export async function GET(_req: NextRequest) {
+  return NextResponse.json({ data: null })
+}
+```
+
+**Stub pattern for a component:**
+```tsx
+// STUB — will be replaced by [sprint] agent
+export default function ComponentName() {
+  return null
+}
+```
+
+After committing stubs, change the task description to say `MODIFY EXISTING FILE:` (not `CREATE NEW FILE:`).
+
+### 13.4 — The Output Format Rule (Critical)
+
+The n8n system prompt teaches Claude agents to use `## Modified File:` heading. This happens automatically when descriptions are written in the proven style.
+
+**❌ DO NOT put explicit format instructions in task descriptions.** This was the root cause of P9D-FIX-2 Round 2 failures:
+- Descriptions starting with `⚠️ CRITICAL OUTPUT FORMAT —` caused agents to restructure their output differently
+- They used `### File:` (H3) instead of `## Modified File:` (H2)
+- The n8n parser didn't find the expected heading → no commit
+
+**✅ DO write short, direct descriptions.** Compare:
+
+**BAD (produced `### File:` heading, no commit):**
+```
+⚠️ CRITICAL OUTPUT FORMAT — The CI pipeline parses your response for...
+## Modified File: `path`
+...
+MODIFY EXISTING FILE: path
+[task description]
+```
+
+**GOOD (produced `## Modified File:` heading, committed):**
+```
+MODIFY EXISTING FILE: apps/web/src/components/iris/IrisWorkspace.tsx
+DO NOT create a new file. Modify IrisWorkspace.tsx directly.
+
+EXACT LOCATION: Find the comment "// ── Restore session from localStorage" (around line 181).
+Add a NEW useEffect AFTER that block...
+[precise code to add]
+```
+
+The difference: the GOOD description is direct task instruction. The BAD description starts with format meta-instructions that confuse the agent's output structure.
+
+### 13.5 — The Three Layers of Commit Failure
+
+In P9D-FIX-2, three independent failures were discovered:
+
+| Layer | Root Cause | Fix |
+|-------|-----------|-----|
+| Layer 1 | `agent_role: 'architect'` → routes to document pipeline, not code pipeline | Use `agent_role: 'frontend_engineer'` for code tasks |
+| Layer 2 | Long descriptions with explicit format instructions → agent uses `### File:` instead of `## Modified File:` | Write short, direct descriptions. Trust n8n system prompt for format |
+| Layer 3 | Task targets a non-existent file → n8n can't get SHA → silent skip | Create stub files first, then change `CREATE` to `MODIFY` |
+
+All three must be correct for a code commit to succeed.
+
+### 13.6 — Correct agent_role Values
+
+| Purpose | agent_role | What it does |
+|---------|-----------|-------------|
+| Code files (.tsx, .ts, .js) | `frontend_engineer` | Routes to code pipeline, commits via GitHub API |
+| Documents (.md files) | `architect` | Routes to document pipeline, stores in agent_outputs |
+| SQL migrations | `architect` or `migration` | Document pipeline, IRIS reads output and manually applies |
+
+> **Never use `architect` for code tasks that need to be committed to the repo.**
+
+---
+
+
 
 ### Task status flow
 `pending` → `ready` → `in_progress` → `completed` | `failed` | `blocked`
