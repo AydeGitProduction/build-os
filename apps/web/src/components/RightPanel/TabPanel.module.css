@@ -1,0 +1,156 @@
+/* src/components/RightPanel/TabPanel.module.css */
+
+/* ─── Tab Bar ──────────────────────────────────────────────────────────────── */
+
+.tabBar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border, #2a2a2e);
+  padding: 0 16px;
+  background: var(--color-surface, #1a1a1e);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tabButton {
+  position: relative;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--color-text-muted, #6b7280);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 150ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tabButton:hover {
+  color: var(--color-text-secondary, #9ca3af);
+}
+
+.tabButton.active {
+  color: var(--color-text-primary, #f3f4f6);
+}
+
+/* Animated underline indicator */
+.tabButton::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-accent, #6366f1);
+  border-radius: 2px 2px 0 0;
+  transform: scaleX(0);
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: center;
+}
+
+.tabButton.active::after {
+  transform: scaleX(1);
+}
+
+/* Focus ring */
+.tabButton:focus-visible {
+  outline: 2px solid var(--color-accent, #6366f1);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+/* ─── Content Container ────────────────────────────────────────────────────── */
+
+.contentWrapper {
+  position: relative;
+  flex: 1;
+  overflow: hidden; /* Contain slide animations */
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Tab Content Base ─────────────────────────────────────────────────────── */
+
+.tabContent {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  /* Initial state: visible and in place */
+  opacity: 1;
+  transform: translateX(0);
+  will-change: opacity, transform;
+
+  /* Default transition for entering */
+  transition:
+    opacity 150ms ease,
+    transform 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* ─── Exiting State ─────────────────────────────────────────────────────────
+   Outgoing tab: fade out only (no slide needed — slides away naturally)
+   Duration: 100ms
+*/
+.tabContent.exiting {
+  opacity: 0;
+  transform: translateX(-8px);
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease;
+  pointer-events: none;
+}
+
+/* ─── Entering State ────────────────────────────────────────────────────────
+   Incoming tab: start off-screen right, fade in + slide to center
+   Duration: 150ms
+*/
+.tabContent.entering {
+  opacity: 0;
+  transform: translateX(8px);
+  /* No transition on initial entering frame — animation triggers on next paint */
+  transition: none;
+}
+
+/* Active entering: triggered one frame after .entering is applied */
+.tabContent.enteringActive {
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 150ms ease,
+    transform 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* ─── Idle State ────────────────────────────────────────────────────────────
+   Fully visible, no transition needed
+*/
+.tabContent.idle {
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 150ms ease,
+    transform 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* ─── Scrollbar Styling ─────────────────────────────────────────────────────── */
+
+.tabContent::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tabContent::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabContent::-webkit-scrollbar-thumb {
+  background: var(--color-border, #2a2a2e);
+  border-radius: 3px;
+}
+
+.tabContent::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted, #6b7280);
+}
