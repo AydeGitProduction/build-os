@@ -5,7 +5,7 @@ import TopBar from '@/components/layout/TopBar'
 import CommandCenter from '@/components/command/CommandCenter'
 import Button from '@/components/ui/Button'
 import Link from 'next/link'
-import { Activity } from 'lucide-react'
+import { Activity, Rocket } from 'lucide-react'
 
 interface Props {
   params: { id: string }
@@ -72,11 +72,18 @@ export default async function ProjectCommandCenterPage({ params }: Props) {
         title={project.name}
         subtitle="Command Center"
         actions={
-          <Link href={`/projects/${params.id}/orchestrate`}>
-            <Button size="sm" variant="outline" leftIcon={<Activity className="h-3.5 w-3.5" />}>
-              Orchestrate
-            </Button>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href={`/projects/${params.id}/orchestrate`}>
+              <Button size="sm" variant="outline" leftIcon={<Activity className="h-3.5 w-3.5" />}>
+                Orchestrate
+              </Button>
+            </Link>
+            <Link href={`/projects/${params.id}/autopilot`}>
+              <Button size="sm" variant="primary" leftIcon={<Rocket className="h-3.5 w-3.5" />}>
+                Autopilot Mode
+              </Button>
+            </Link>
+          </div>
         }
       />
 
