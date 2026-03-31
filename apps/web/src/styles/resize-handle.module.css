@@ -1,0 +1,44 @@
+/* src/styles/resize-handle.module.css */
+
+.divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 4px;
+  flex-shrink: 0;
+  align-self: stretch;
+  cursor: col-resize;
+  background-color: rgba(255, 255, 255, 0.04);
+  transition: background-color 150ms ease;
+  outline: none;
+}
+
+.divider:hover,
+.divider:focus-visible {
+  background-color: rgba(59, 130, 246, 0.2); /* blue-500/20 */
+}
+
+.divider[data-dragging="true"] {
+  background-color: rgba(59, 130, 246, 0.3);
+}
+
+/* Extended hit area */
+.divider::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: -6px;
+  right: -6px;
+  cursor: col-resize;
+}
+
+/* Focus ring */
+.divider:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  outline: 2px solid rgba(59, 130, 246, 0.6);
+  outline-offset: 0;
+  border-radius: 2px;
+}
