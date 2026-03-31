@@ -41,7 +41,7 @@ export const BUILD_OS_ROADMAP_P11_6: RoadmapEpic[] = [
   {
     title: P11_6_EPIC_TITLE,
     description: 'Build integration test harness, run API validation suite, promote CNV tasks to FULLY_REAL by proving runtime behavior.',
-    status: 'active',
+    status: 'in_progress',
     features: [
       // ── WS1 — Test Harness Foundation ──────────────────────────────────────
       {
