@@ -775,17 +775,31 @@ the file path as a comment (this triggers automated deployment):
 
 **Important**: Include the path comment INSIDE the code block, NOT just in a heading above it. The heading level (`##`, `###`) is irrelevant. The path comment on the first line of the `` ` `` `` ` `` `` ` ``tsx block is what matters.
 
-### 13.5 — The Three Layers of Commit Failure
+### 13.5 — The Four Layers of Commit Failure
 
-In P9D-FIX-2, three independent failures were discovered:
+In P9D-FIX-2, four independent failures were discovered:
 
 | Layer | Root Cause | Fix |
 |-------|-----------|-----|
 | Layer 1 | `agent_role: 'architect'` → routes to document pipeline, not code pipeline | Use `agent_role: 'frontend_engineer'` for code tasks |
 | Layer 2 | Code blocks start with `import {...}` instead of `// apps/web/src/path` comment → n8n has no path to commit to | Task descriptions must include `// apps/web/src/path` as first line of code block |
 | Layer 3 | Task targets a non-existent file → n8n can't get SHA → silent skip | Create stub files first, then change `CREATE` to `MODIFY` |
+| Layer 4 | GitHub App installation token expired (1hr TTL) → all commits silently fail | **Dev action**: refresh GitHub App token in n8n; or extract output from `agent_outputs` table and commit manually |
 
-All three must be correct for a code commit to succeed.
+All four must be correct for a code commit to succeed.
+
+### 13.5a — GitHub App Token Expiry (Layer 4 Detail)
+
+GitHub App installation tokens have a **1-hour TTL**. Symptoms when expired:
+- Tasks show `status: completed` in DB, but no git commits appear
+- No error message anywhere — completely silent failure
+- `agent_outputs` shows correct output (with `// path comment`) but nothing committed
+
+**How to diagnose**: Check `git log` — if the last agent commit was 60+ minutes ago and new tasks are completing with no commits, token is expired.
+
+**Fix**: In n8n, the GitHub authentication step must be re-executed to get a fresh installation token, or the workflow must be configured to obtain a fresh token dynamically on every run (not cache a session-level token).
+
+**Fallback if token is expired**: Extract the `content` field from `agent_outputs` for the completed task, find the code block, and commit manually to the repo. The agent's implementation is correct — only the automated deployment is broken.
 
 ### 13.6 — Correct agent_role Values
 
