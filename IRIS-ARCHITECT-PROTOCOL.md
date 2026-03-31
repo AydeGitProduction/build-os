@@ -671,17 +671,22 @@ This section documents the exact mechanism by which agent outputs become git com
 The n8n execution pipeline:
 
 1. Receives a task from the dispatch webhook
-2. Sends the task description to Claude with a **system prompt** that specifies output format
+2. Sends the task description to Claude with a system prompt
 3. Claude returns a document with `output_type: "document"`
-4. n8n parses the output looking for this exact heading pattern:
+4. n8n scans the output for **code blocks where the first line is a file path comment**:
 
 ```
-## Modified File: `apps/web/src/path/to/file.tsx`
+```tsx
+// apps/web/src/path/to/file.tsx
+[file content here]
+```
 ```
 
-5. If found: n8n calls GitHub API — **GET file** (to retrieve SHA), then **PUT** to update
+5. If found: n8n extracts the path, calls GitHub API — **GET file** (to retrieve SHA), then **PUT** to commit
 6. If NOT found: task completes with `status: "completed"` but **no git commit is made**
-7. Task marked complete regardless — there is NO error for missing heading
+7. Task marked complete regardless — there is NO error for missing path comment
+
+> **Critical rule**: The path comment `// apps/web/src/...` must be the **first line** of the code block. Starting a code block with `import { ... }` or `export default` will NOT trigger a commit.
 
 ### 13.2 — The "Existing File SHA" Requirement
 
@@ -731,37 +736,44 @@ export default function ComponentName() {
 
 After committing stubs, change the task description to say `MODIFY EXISTING FILE:` (not `CREATE NEW FILE:`).
 
-### 13.4 — The Output Format Rule (Critical)
+### 13.4 — The Output Format Rule (Critical — Definitive Finding)
 
-The n8n system prompt teaches Claude agents to use `## Modified File:` heading. This happens automatically when descriptions are written in the proven style.
+n8n does NOT parse headings at all. It scans for **code blocks with a path comment on the first line**. This was discovered by comparing 8 successful commits against 15+ failing ones.
 
-**❌ DO NOT put explicit format instructions in task descriptions.** This was the root cause of P9D-FIX-2 Round 2 failures:
-- Descriptions starting with `⚠️ CRITICAL OUTPUT FORMAT —` caused agents to restructure their output differently
-- They used `### File:` (H3) instead of `## Modified File:` (H2)
-- The n8n parser didn't find the expected heading → no commit
-
-**✅ DO write short, direct descriptions.** Compare:
-
-**BAD (produced `### File:` heading, no commit):**
+**The ONLY trigger for a GitHub commit:**
 ```
-⚠️ CRITICAL OUTPUT FORMAT — The CI pipeline parses your response for...
-## Modified File: `path`
-...
-MODIFY EXISTING FILE: path
-[task description]
+```tsx
+// apps/web/src/path/to/file.tsx
+[file content]
+```
 ```
 
-**GOOD (produced `## Modified File:` heading, committed):**
-```
-MODIFY EXISTING FILE: apps/web/src/components/iris/IrisWorkspace.tsx
-DO NOT create a new file. Modify IrisWorkspace.tsx directly.
+**What does NOT trigger a commit (all cause silent failure):**
 
-EXACT LOCATION: Find the comment "// ── Restore session from localStorage" (around line 181).
-Add a NEW useEffect AFTER that block...
-[precise code to add]
+```tsx
+import { NextRequest } from 'next/server'  // ← starts with import, not // path
 ```
 
-The difference: the GOOD description is direct task instruction. The BAD description starts with format meta-instructions that confuse the agent's output structure.
+```tsx
+export default function Page() {  // ← starts with code, not // path
+```
+
+**The correct pattern for task descriptions:**
+
+```
+MODIFY EXISTING FILE: apps/web/src/app/(app)/settings/page.tsx
+
+Replace the stub with this implementation. The FIRST LINE of your code block must be
+the file path as a comment (this triggers automated deployment):
+
+```tsx
+// apps/web/src/app/(app)/settings/page.tsx
+'use client'
+[... rest of file ...]
+```
+```
+
+**Important**: Include the path comment INSIDE the code block, NOT just in a heading above it. The heading level (`##`, `###`) is irrelevant. The path comment on the first line of the `` ` `` `` ` `` `` ` ``tsx block is what matters.
 
 ### 13.5 — The Three Layers of Commit Failure
 
@@ -770,7 +782,7 @@ In P9D-FIX-2, three independent failures were discovered:
 | Layer | Root Cause | Fix |
 |-------|-----------|-----|
 | Layer 1 | `agent_role: 'architect'` → routes to document pipeline, not code pipeline | Use `agent_role: 'frontend_engineer'` for code tasks |
-| Layer 2 | Long descriptions with explicit format instructions → agent uses `### File:` instead of `## Modified File:` | Write short, direct descriptions. Trust n8n system prompt for format |
+| Layer 2 | Code blocks start with `import {...}` instead of `// apps/web/src/path` comment → n8n has no path to commit to | Task descriptions must include `// apps/web/src/path` as first line of code block |
 | Layer 3 | Task targets a non-existent file → n8n can't get SHA → silent skip | Create stub files first, then change `CREATE` to `MODIFY` |
 
 All three must be correct for a code commit to succeed.
