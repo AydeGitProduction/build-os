@@ -39,6 +39,7 @@ export async function POST(
     }
 
     const projectId = params.id
+    const force = request.nextUrl.searchParams.get('force') === 'true'
 
     // ── Project guard ────────────────────────────────────────────────────────
     const { data: project, error: projErr } = await admin
@@ -60,10 +61,14 @@ export async function POST(
       .limit(1)
 
     if (existingEpic && existingEpic.length > 0) {
-      return NextResponse.json(
-        { error: 'P11.6 roadmap already seeded', code: 'ALREADY_SEEDED' },
-        { status: 409 }
-      )
+      if (!force) {
+        return NextResponse.json(
+          { error: 'P11.6 roadmap already seeded', code: 'ALREADY_SEEDED' },
+          { status: 409 }
+        )
+      }
+      // force=true: delete existing partial epic + cascading features/tasks
+      await admin.from('epics').delete().eq('id', existingEpic[0].id)
     }
 
     // ── Find current highest order_index ─────────────────────────────────────
