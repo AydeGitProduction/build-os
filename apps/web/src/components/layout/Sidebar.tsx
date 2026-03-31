@@ -135,6 +135,19 @@ export default function Sidebar({ projectId, projectName }: SidebarProps) {
         )}
       </nav>
 
+      {/* ── Autopilot Mode Switch ── */}
+      {projectId && (
+        <div className="px-3 pb-2">
+          <Link
+            href={`/projects/${projectId}/autopilot`}
+            className="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium text-brand-300 hover:bg-brand-600/20 hover:text-brand-200 transition-colors border border-brand-600/30"
+          >
+            <Rocket className="h-4 w-4" />
+            Autopilot Mode
+          </Link>
+        </div>
+      )}
+
       {/* Footer */}
       <div className="border-t border-white/10 px-3 py-3 space-y-0.5">
         <Link

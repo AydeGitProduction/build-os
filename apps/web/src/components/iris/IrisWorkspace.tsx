@@ -64,7 +64,8 @@ interface Blueprint {
 }
 
 interface IrisWorkspaceProps {
-  userId: string
+  userId:      string
+  projectId?:  string   // optional: pre-select a specific project (used in Autopilot Mode)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -141,13 +142,15 @@ const sessionKey = (id: string) => `iris_v1_${id}`
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function IrisWorkspace({ userId: _userId }: IrisWorkspaceProps) {
+export function IrisWorkspace({ userId: _userId, projectId: propProjectId }: IrisWorkspaceProps) {
   const router = useRouter()
-  const [projectId, setProjectId] = useState<string | null>(() =>
-    typeof window !== 'undefined'
+  const [projectId, setProjectId] = useState<string | null>(() => {
+    // Prefer explicit prop (e.g. from Autopilot Mode), then URL param
+    if (propProjectId) return propProjectId
+    return typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search).get('id')
       : null
-  )
+  })
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [messages, setMessages] = useState<IrisMessage[]>([WELCOME])
   const [conversationHistory, setConversationHistory] = useState<ConvMessage[]>([])
