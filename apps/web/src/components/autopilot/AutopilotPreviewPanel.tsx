@@ -56,15 +56,17 @@ function BlueprintTab({ projectId }: { projectId: string }) {
   useEffect(() => {
     let mounted = true
     const load = async () => {
-      const r = await apiGet<Blueprint>(`/api/projects/${projectId}/blueprint`)
+      // apiGet returns { data: responseBody } — server returns { data: blueprint | null }
+      const r = await apiGet<{ data: Blueprint | null }>(`/api/projects/${projectId}/blueprint`)
       if (!mounted) return
-      if (r.data) {
-        if (prevId.current && prevId.current !== r.data.id) {
+      const bp = r.data?.data ?? null   // unwrap server { data: ... } envelope
+      if (bp) {
+        if (prevId.current && prevId.current !== bp.id) {
           setChanged(true)
           setTimeout(() => setChanged(false), 2000)
         }
-        prevId.current = r.data.id
-        setBp(r.data)
+        prevId.current = bp.id
+        setBp(bp)
       }
       setLoading(false)
     }
