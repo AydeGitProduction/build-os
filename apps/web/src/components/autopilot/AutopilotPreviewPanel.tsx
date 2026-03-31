@@ -73,8 +73,19 @@ function BlueprintTab({ projectId }: { projectId: string }) {
     return () => { mounted = false; clearInterval(t) }
   }, [projectId])
 
-  if (loading) return <div className="p-4 text-xs text-slate-500 animate-pulse">Loading blueprint…</div>
-  if (!bp) return <div className="p-4 text-xs text-slate-500">No blueprint yet — complete the wizard to generate.</div>
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
+      <RefreshCw className="h-5 w-5 animate-spin" />
+      <span className="text-xs">Loading blueprint…</span>
+    </div>
+  )
+  if (!bp) return (
+    <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center">
+      <GitBranch className="h-8 w-8 text-slate-700" />
+      <p className="text-sm font-medium text-slate-400">No blueprint yet</p>
+      <p className="text-xs text-slate-600">Complete the wizard on the left to generate your execution blueprint.</p>
+    </div>
+  )
 
   return (
     <div className={cn('p-4 space-y-3 text-sm', changed && 'animate-highlight')}>
@@ -148,7 +159,11 @@ function TasksTab({ projectId }: { projectId: string }) {
   return (
     <div className="overflow-y-auto flex-1 py-2">
       {tasks.length === 0 ? (
-        <p className="text-xs text-slate-500 px-4 py-3">No active tasks yet.</p>
+        <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center py-12">
+          <CheckSquare className="h-8 w-8 text-slate-700" />
+          <p className="text-sm font-medium text-slate-400">No active tasks</p>
+          <p className="text-xs text-slate-600">Press Run to start execution and tasks will appear here.</p>
+        </div>
       ) : (
         <>
           <Section title="Active" items={active} />
