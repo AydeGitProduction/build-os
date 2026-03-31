@@ -26,7 +26,7 @@ const sizeStyles: Record<Size, string> = {
   lg: 'h-11 px-5 text-base gap-2.5 rounded-lg',
 }
 
-export default function Button({
+export function Button({
   variant = 'primary',
   size = 'md',
   loading = false,
@@ -62,3 +62,5 @@ export default function Button({
     </button>
   )
 }
+
+export default Button

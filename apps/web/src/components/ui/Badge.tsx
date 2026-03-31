@@ -12,7 +12,7 @@ interface BadgeProps {
   className?: string
 }
 
-export default function Badge({
+export function Badge({
   label,
   children,
   status,
@@ -68,3 +68,5 @@ export function PriorityBadge({ priority, className }: { priority: string; class
     </Badge>
   )
 }
+
+export default Badge

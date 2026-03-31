@@ -1,27 +1,8 @@
 // apps/web/src/components/wizard/BlueprintTab.tsx
 
 import React, { useEffect, useState, useCallback } from 'react';
-import {
-  Box,
-  Typography,
-  Chip,
-  Skeleton,
-  Alert,
-  Collapse,
-  Button,
-  Divider,
-  Stack,
-  Paper,
-  IconButton,
-  Tooltip,
-} from '@mui/material';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import LayersIcon from '@mui/icons-material/Layers';
-import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import CodeIcon from '@mui/icons-material/Code';
-import RefreshIcon from '@mui/icons-material/Refresh';
+import { RefreshCw, ChevronDown, ChevronUp, Layers, GitBranch, Code, Sparkles } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { apiGet } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -62,7 +43,6 @@ interface BlueprintTabProps {
 // ─── Helper: count epics across all phases ───────────────────────────────────
 
 function countEpics(bp: Blueprint): number {
-  // Epics may be nested per-phase or flat at root level
   if (bp.phases && bp.phases.length > 0) {
     const fromPhases = bp.phases.reduce(
       (acc, phase) => acc + (phase.epics?.length ?? 0),
@@ -73,220 +53,95 @@ function countEpics(bp: Blueprint): number {
   return bp.epics?.length ?? 0;
 }
 
-// ─── Sub-components ──────────────────────────────────────────────────────────
+// ─── Loading Skeleton ─────────────────────────────────────────────────────────
 
-interface SectionHeaderProps {
-  icon: React.ReactNode;
-  label: string;
-}
-
-const SectionHeader: React.FC<SectionHeaderProps> = ({ icon, label }) => (
-  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-    <Box sx={{ color: 'primary.main', display: 'flex', alignItems: 'center' }}>
-      {icon}
-    </Box>
-    <Typography variant="caption" fontWeight={700} color="text.secondary" textTransform="uppercase" letterSpacing={0.8}>
-      {label}
-    </Typography>
-  </Stack>
-);
-
-interface StatPillProps {
-  value: number;
-  label: string;
-  icon: React.ReactNode;
-}
-
-const StatPill: React.FC<StatPillProps> = ({ value, label, icon }) => (
-  <Paper
-    variant="outlined"
-    sx={{
-      px: 2,
-      py: 1.5,
-      display: 'flex',
-      alignItems: 'center',
-      gap: 1.5,
-      borderRadius: 2,
-      flex: 1,
-      minWidth: 120,
-    }}
-  >
-    <Box sx={{ color: 'primary.main', display: 'flex' }}>{icon}</Box>
-    <Box>
-      <Typography variant="h6" fontWeight={700} lineHeight={1}>
-        {value}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
-    </Box>
-  </Paper>
+const BlueprintSkeleton: React.FC = () => (
+  <div className="p-4 space-y-3">
+    <div className="h-6 w-3/5 bg-zinc-800 rounded animate-pulse" />
+    <div className="h-4 w-11/12 bg-zinc-800 rounded animate-pulse" />
+    <div className="h-4 w-3/4 bg-zinc-800 rounded animate-pulse" />
+    <div className="flex gap-2 mt-4">
+      {[80, 100, 70, 90].map((w, i) => (
+        <div key={i} className="h-6 bg-zinc-800 rounded-full animate-pulse" style={{ width: w }} />
+      ))}
+    </div>
+    <div className="flex gap-2 mt-4">
+      <div className="flex-1 h-16 bg-zinc-800 rounded-lg animate-pulse" />
+      <div className="flex-1 h-16 bg-zinc-800 rounded-lg animate-pulse" />
+    </div>
+    <div className="h-9 bg-zinc-800 rounded-lg animate-pulse mt-2" />
+  </div>
 );
 
 // ─── Empty State ─────────────────────────────────────────────────────────────
 
 const EmptyState: React.FC = () => (
-  <Box
-    sx={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      py: 8,
-      px: 3,
-      textAlign: 'center',
-      gap: 2,
-    }}
-  >
-    <Box
-      sx={{
-        width: 64,
-        height: 64,
-        borderRadius: '50%',
-        bgcolor: 'action.hover',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <AutoAwesomeIcon sx={{ fontSize: 32, color: 'text.disabled' }} />
-    </Box>
-    <Typography variant="h6" color="text.secondary" fontWeight={600}>
-      No blueprint yet
-    </Typography>
-    <Typography variant="body2" color="text.disabled" maxWidth={320}>
-      Chat with IRIS to generate one. Your project blueprint will appear here
-      once it&apos;s ready.
-    </Typography>
-  </Box>
+  <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
+    <div className="w-14 h-14 rounded-full bg-zinc-800 flex items-center justify-center">
+      <Sparkles className="w-7 h-7 text-zinc-500" />
+    </div>
+    <p className="text-zinc-300 font-semibold text-sm">No blueprint yet</p>
+    <p className="text-zinc-500 text-xs max-w-xs leading-relaxed">
+      Chat with IRIS to generate one. Your project blueprint will appear here once it&apos;s ready.
+    </p>
+  </div>
 );
 
-// ─── Loading Skeleton ─────────────────────────────────────────────────────────
+// ─── Full Blueprint Content ───────────────────────────────────────────────────
 
-const BlueprintSkeleton: React.FC = () => (
-  <Box sx={{ p: 3 }}>
-    <Skeleton variant="text" width="60%" height={36} sx={{ mb: 1 }} />
-    <Skeleton variant="text" width="90%" height={20} />
-    <Skeleton variant="text" width="75%" height={20} sx={{ mb: 3 }} />
-    <Stack direction="row" spacing={1} sx={{ mb: 3 }}>
-      {[80, 100, 70, 90].map((w, i) => (
-        <Skeleton key={i} variant="rounded" width={w} height={28} />
-      ))}
-    </Stack>
-    <Stack direction="row" spacing={2} sx={{ mb: 3 }}>
-      <Skeleton variant="rounded" height={72} sx={{ flex: 1 }} />
-      <Skeleton variant="rounded" height={72} sx={{ flex: 1 }} />
-    </Stack>
-    <Skeleton variant="rounded" height={40} />
-  </Box>
-);
-
-// ─── Full Blueprint Expandable Content ────────────────────────────────────────
-
-interface FullBlueprintProps {
-  bp: Blueprint;
-}
-
-const FullBlueprintContent: React.FC<FullBlueprintProps> = ({ bp }) => {
+const FullBlueprintContent: React.FC<{ bp: Blueprint }> = ({ bp }) => {
   const phases = bp.phases ?? [];
 
-  // If there's rawContent, show it as formatted JSON fallback
-  if (phases.length === 0 && !bp.rawContent) {
+  if (phases.length === 0 && bp.rawContent) {
     return (
-      <Box
-        component="pre"
-        sx={{
-          mt: 2,
-          p: 2,
-          bgcolor: 'action.hover',
-          borderRadius: 2,
-          fontSize: '0.7rem',
-          overflowX: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          color: 'text.secondary',
-          fontFamily: 'monospace',
-        }}
-      >
-        {JSON.stringify(bp, null, 2)}
-      </Box>
+      <pre className="mt-2 p-3 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-400 font-mono overflow-x-auto whitespace-pre-wrap break-words">
+        {bp.rawContent}
+      </pre>
     );
   }
 
-  if (bp.rawContent && phases.length === 0) {
+  if (phases.length === 0) {
     return (
-      <Box
-        component="pre"
-        sx={{
-          mt: 2,
-          p: 2,
-          bgcolor: 'action.hover',
-          borderRadius: 2,
-          fontSize: '0.75rem',
-          overflowX: 'auto',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          color: 'text.secondary',
-          fontFamily: 'monospace',
-        }}
-      >
-        {bp.rawContent}
-      </Box>
+      <pre className="mt-2 p-3 bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-zinc-400 font-mono overflow-x-auto whitespace-pre-wrap break-words">
+        {JSON.stringify(bp, null, 2)}
+      </pre>
     );
   }
 
   return (
-    <Box sx={{ mt: 2 }}>
+    <div className="mt-3 space-y-4">
       {phases.map((phase, phaseIdx) => (
-        <Box key={phase.id ?? phaseIdx} sx={{ mb: 3 }}>
-          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-            <Chip
-              label={`Phase ${phase.order ?? phaseIdx + 1}`}
-              size="small"
-              color="primary"
-              variant="outlined"
-              sx={{ fontWeight: 700, fontSize: '0.7rem' }}
-            />
-            <Typography variant="subtitle2" fontWeight={700}>
-              {phase.title}
-            </Typography>
-          </Stack>
+        <div key={phase.id ?? phaseIdx}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-bold text-brand-400 border border-brand-600 rounded-full px-2 py-0.5">
+              Phase {phase.order ?? phaseIdx + 1}
+            </span>
+            <span className="text-sm font-semibold text-zinc-100">{phase.title}</span>
+          </div>
           {phase.description && (
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1, pl: 1 }}>
-              {phase.description}
-            </Typography>
+            <p className="text-xs text-zinc-500 mb-1 pl-1">{phase.description}</p>
           )}
           {phase.epics && phase.epics.length > 0 && (
-            <Box sx={{ pl: 2 }}>
+            <div className="pl-3 space-y-1">
               {phase.epics.map((epic, epicIdx) => (
-                <Box
+                <div
                   key={epic.id ?? epicIdx}
-                  sx={{
-                    py: 0.75,
-                    px: 1.5,
-                    mb: 0.5,
-                    borderLeft: '2px solid',
-                    borderColor: 'primary.light',
-                    borderRadius: '0 4px 4px 0',
-                    bgcolor: 'action.hover',
-                  }}
+                  className="py-1.5 px-3 border-l-2 border-brand-500 bg-zinc-800/50 rounded-r"
                 >
-                  <Typography variant="body2" fontWeight={600}>
-                    {epic.title}
-                  </Typography>
+                  <p className="text-xs font-semibold text-zinc-200">{epic.title}</p>
                   {epic.description && (
-                    <Typography variant="caption" color="text.secondary">
-                      {epic.description}
-                    </Typography>
+                    <p className="text-xs text-zinc-500 mt-0.5">{epic.description}</p>
                   )}
-                </Box>
+                </div>
               ))}
-            </Box>
+            </div>
           )}
-          {phaseIdx < phases.length - 1 && <Divider sx={{ mt: 2 }} />}
-        </Box>
+          {phaseIdx < phases.length - 1 && (
+            <div className="mt-3 border-t border-zinc-800" />
+          )}
+        </div>
       ))}
-    </Box>
+    </div>
   );
 };
 
@@ -305,16 +160,13 @@ export const BlueprintTab: React.FC<BlueprintTabProps> = ({ projectId }) => {
     setError(null);
 
     try {
-      // ─── CRITICAL: P9C-DEBUG envelope unwrap ───────────────────────
-      // The API returns: { data: Blueprint | null }
-      // apiGet<T> itself unwraps one layer, giving us { data: Blueprint | null }
-      // So we must access .data again to reach the Blueprint object.
+      // CRITICAL: P9C-DEBUG envelope unwrap
+      // apiGet<T> unwraps one layer → { data: Blueprint | null }
+      // Access .data again to reach the Blueprint object
       const r = await apiGet<{ data: Blueprint | null }>(
         `/api/projects/${projectId}/blueprint`
       );
-      const bp = r.data?.data ?? null; // CRITICAL: double-unwrap the envelope
-      // ──────────────────────────────────────────────────────────────
-
+      const bp = r.data?.data ?? null;
       setBlueprint(bp);
     } catch (err: unknown) {
       const message =
@@ -330,137 +182,125 @@ export const BlueprintTab: React.FC<BlueprintTabProps> = ({ projectId }) => {
     fetchBlueprint();
   }, [fetchBlueprint]);
 
-  // ── Loading ────────────────────────────────────────────────────────────────
-  if (loading) {
-    return <BlueprintSkeleton />;
-  }
+  if (loading) return <BlueprintSkeleton />;
 
-  // ── Error ──────────────────────────────────────────────────────────────────
   if (error) {
     return (
-      <Box sx={{ p: 3 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button size="small" onClick={fetchBlueprint} startIcon={<RefreshIcon />}>
-              Retry
-            </Button>
-          }
-        >
-          {error}
-        </Alert>
-      </Box>
+      <div className="p-4">
+        <div className="flex items-start gap-3 p-3 bg-red-950 border border-red-800 rounded-lg text-red-200 text-sm">
+          <div className="flex-1">{error}</div>
+          <button
+            onClick={fetchBlueprint}
+            className="flex items-center gap-1 text-xs text-red-300 hover:text-red-100 shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry
+          </button>
+        </div>
+      </div>
     );
   }
 
-  // ── Empty State ────────────────────────────────────────────────────────────
-  if (!blueprint) {
-    return <EmptyState />;
-  }
+  if (!blueprint) return <EmptyState />;
 
-  // ── Computed values ────────────────────────────────────────────────────────
   const phaseCount = blueprint.phases?.length ?? 0;
   const epicCount = countEpics(blueprint);
   const techStack = blueprint.techStack ?? [];
   const title = blueprint.title ?? 'Untitled Blueprint';
   const description = blueprint.description ?? '';
 
-  // ── Blueprint Render ───────────────────────────────────────────────────────
   return (
-    <Box sx={{ p: 3 }}>
+    <div className="p-4">
       {/* Header */}
-      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" sx={{ mb: 0.5 }}>
-        <Typography variant="h6" fontWeight={700} sx={{ flex: 1, pr: 1 }}>
-          {title}
-        </Typography>
-        <Tooltip title="Refresh blueprint">
-          <IconButton size="small" onClick={fetchBlueprint} aria-label="refresh blueprint">
-            <RefreshIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      </Stack>
+      <div className="flex items-start justify-between mb-1">
+        <h3 className="text-sm font-bold text-zinc-100 flex-1 pr-2">{title}</h3>
+        <button
+          onClick={fetchBlueprint}
+          aria-label="Refresh blueprint"
+          className="text-zinc-500 hover:text-zinc-300 transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+        </button>
+      </div>
 
       {description && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, lineHeight: 1.6 }}>
-          {description}
-        </Typography>
+        <p className="text-xs text-zinc-400 mb-4 leading-relaxed">{description}</p>
       )}
 
-      {/* Tech Stack Chips */}
+      {/* Tech Stack */}
       {techStack.length > 0 && (
-        <Box sx={{ mb: 3 }}>
-          <SectionHeader icon={<CodeIcon fontSize="small" />} label="Tech Stack" />
-          <Stack direction="row" flexWrap="wrap" gap={0.75}>
+        <div className="mb-4">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Code className="w-3 h-3 text-brand-400" />
+            <span className="text-xs font-bold text-zinc-500 uppercase tracking-wide">Tech Stack</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
             {techStack.map((tech) => (
-              <Chip
+              <span
                 key={tech}
-                label={tech}
-                size="small"
-                variant="outlined"
-                sx={{
-                  fontSize: '0.75rem',
-                  fontWeight: 500,
-                  borderColor: 'primary.light',
-                  color: 'primary.main',
-                }}
-              />
+                className="text-xs font-medium text-brand-300 border border-brand-700 rounded-full px-2 py-0.5"
+              >
+                {tech}
+              </span>
             ))}
-          </Stack>
-        </Box>
+          </div>
+        </div>
       )}
 
       {/* Stats */}
       {(phaseCount > 0 || epicCount > 0) && (
-        <Box sx={{ mb: 3 }}>
-          <SectionHeader icon={<AccountTreeIcon fontSize="small" />} label="Structure" />
-          <Stack direction="row" spacing={2}>
+        <div className="mb-4">
+          <div className="flex items-center gap-1.5 mb-2">
+            <GitBranch className="w-3 h-3 text-brand-400" />
+            <span className="text-xs font-bold text-zinc-500 uppercase tracking-wide">Structure</span>
+          </div>
+          <div className="flex gap-2">
             {phaseCount > 0 && (
-              <StatPill
-                value={phaseCount}
-                label={phaseCount === 1 ? 'Phase' : 'Phases'}
-                icon={<LayersIcon fontSize="small" />}
-              />
+              <div className="flex items-center gap-2 flex-1 border border-zinc-700 rounded-lg px-3 py-2">
+                <Layers className="w-4 h-4 text-brand-400 shrink-0" />
+                <div>
+                  <p className="text-base font-bold text-zinc-100 leading-none">{phaseCount}</p>
+                  <p className="text-xs text-zinc-500">{phaseCount === 1 ? 'Phase' : 'Phases'}</p>
+                </div>
+              </div>
             )}
             {epicCount > 0 && (
-              <StatPill
-                value={epicCount}
-                label={epicCount === 1 ? 'Epic' : 'Epics'}
-                icon={<AccountTreeIcon fontSize="small" />}
-              />
+              <div className="flex items-center gap-2 flex-1 border border-zinc-700 rounded-lg px-3 py-2">
+                <GitBranch className="w-4 h-4 text-brand-400 shrink-0" />
+                <div>
+                  <p className="text-base font-bold text-zinc-100 leading-none">{epicCount}</p>
+                  <p className="text-xs text-zinc-500">{epicCount === 1 ? 'Epic' : 'Epics'}</p>
+                </div>
+              </div>
             )}
-          </Stack>
-        </Box>
+          </div>
+        </div>
       )}
 
-      <Divider sx={{ mb: 2 }} />
+      <div className="border-t border-zinc-800 mb-3" />
 
       {/* Expandable Full Blueprint */}
-      <Box>
-        <Button
-          fullWidth
-          variant="outlined"
-          size="small"
+      <div>
+        <button
           onClick={() => setExpanded((prev) => !prev)}
-          endIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
           aria-expanded={expanded}
-          aria-controls="blueprint-full-content"
-          sx={{
-            justifyContent: 'space-between',
-            textTransform: 'none',
-            fontWeight: 600,
-            borderColor: 'divider',
-            color: 'text.primary',
-            '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
-          }}
+          className={cn(
+            'w-full flex items-center justify-between px-3 py-2 text-xs font-semibold',
+            'border border-zinc-700 rounded-lg text-zinc-300',
+            'hover:border-brand-600 hover:bg-zinc-800/50 transition-colors'
+          )}
         >
           {expanded ? 'Collapse blueprint' : 'View full blueprint'}
-        </Button>
+          {expanded ? (
+            <ChevronUp className="w-4 h-4 text-zinc-500" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-zinc-500" />
+          )}
+        </button>
 
-        <Collapse in={expanded} id="blueprint-full-content" timeout="auto" unmountOnExit={false}>
-          <FullBlueprintContent bp={blueprint} />
-        </Collapse>
-      </Box>
-    </Box>
+        {expanded && <FullBlueprintContent bp={blueprint} />}
+      </div>
+    </div>
   );
 };
 

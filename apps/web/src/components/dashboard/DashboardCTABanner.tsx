@@ -4,16 +4,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
-import {
-  BoltIcon,
-  SparklesIcon,
-  RocketLaunchIcon,
-  ArrowRightIcon,
-  CheckCircleIcon,
-  ClockIcon,
-} from '@heroicons/react/24/outline';
-import { BoltIcon as BoltSolid } from '@heroicons/react/24/solid';
+import { Zap, Sparkles, Rocket, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { DashboardCTAConfig, CTAVariant } from '@/hooks/useDashboardCTA';
 
@@ -26,9 +17,9 @@ interface DashboardCTABannerProps {
 // ─── Icon Map ───────────────────────────────────────────────────────────────
 
 const IconMap: Record<string, React.ElementType> = {
-  lightning: BoltIcon,
-  wand: SparklesIcon,
-  rocket: RocketLaunchIcon,
+  lightning: Zap,
+  wand: Sparkles,
+  rocket: Rocket,
 };
 
 // ─── Variant Style Map ───────────────────────────────────────────────────────
@@ -127,21 +118,9 @@ function StatusDot({ color }: { color: DashboardCTAConfig['statusColor'] }) {
 
 function ShimmerOverlay() {
   return (
-    <motion.div
-      className="absolute inset-0 overflow-hidden rounded-xl pointer-events-none"
-      initial={false}
-    >
-      <motion.div
-        className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/5 to-transparent skew-x-12"
-        animate={{ translateX: ['−100%', '200%'] }}
-        transition={{
-          duration: 3.5,
-          repeat: Infinity,
-          repeatDelay: 4,
-          ease: 'easeInOut',
-        }}
-      />
-    </motion.div>
+    <div className="absolute inset-0 overflow-hidden rounded-xl pointer-events-none">
+      <div className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/5 to-transparent skew-x-12 animate-[shimmer_4s_ease-in-out_infinite]" />
+    </div>
   );
 }
 
@@ -154,17 +133,14 @@ export function DashboardCTABanner({
 }: DashboardCTABannerProps) {
   const router = useRouter();
   const styles = variantStyles[config.variant];
-  const Icon = IconMap[config.icon] ?? BoltIcon;
+  const Icon = IconMap[config.icon] ?? Zap;
 
   const handleCTAClick = () => {
     router.push(config.href);
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
+    <div
       className={cn(
         'relative w-full rounded-xl border backdrop-blur-sm overflow-hidden',
         styles.banner,
@@ -223,10 +199,8 @@ export function DashboardCTABanner({
 
         {/* CTA Button */}
         <div className="flex-shrink-0">
-          <motion.button
+          <button
             onClick={handleCTAClick}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
             className={cn(
               'inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold',
               'transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2',
@@ -237,13 +211,13 @@ export function DashboardCTABanner({
           >
             <span className="hidden sm:inline">{config.label}</span>
             <span className="sm:hidden">
-              <ArrowRightIcon className="w-4 h-4" />
+              <ArrowRight className="w-4 h-4" />
             </span>
-            <ArrowRightIcon className="w-3.5 h-3.5 hidden sm:inline" />
-          </motion.button>
+            <ArrowRight className="w-3.5 h-3.5 hidden sm:inline" />
+          </button>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
