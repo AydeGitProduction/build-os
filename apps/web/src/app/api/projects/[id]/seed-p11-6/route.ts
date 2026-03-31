@@ -160,7 +160,7 @@ export async function POST(
             title: taskDef.title,
             description: taskDef.description,
             slug: taskSlug,
-            agent_role: taskDef.role || 'BE',
+            agent_role: taskDef.role || 'backend_engineer',
             task_type: taskDef.task_type || 'integration_test',
             priority: taskDef.priority || 'high',
             order_index: idx,
