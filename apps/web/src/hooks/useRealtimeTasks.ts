@@ -1,138 +1,109 @@
-'use client'
-
-/**
- * useRealtimeTasks
- * Subscribes to Supabase Realtime for task + task_run + blocker changes.
- * Returns the live task list and notifies callers via onTaskUpdate callback.
- */
-
-import { useEffect, useRef, useCallback, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import type { RealtimeChannel } from '@supabase/supabase-js'
-
-export interface TaskUpdate {
-  task_id: string
-  old_status: string | null
-  new_status: string
-  task_name?: string
-  event: 'status_change' | 'blocker_created' | 'run_completed'
-}
+// apps/web/src/hooks/useRealtimeTasks.ts
+import { useEffect, useState, useCallback } from 'react';
+import { Task, TaskStatus } from '../types/task';
+import { supabase } from '../lib/supabase';
 
 interface UseRealtimeTasksOptions {
-  projectId: string
-  onTaskUpdate?: (update: TaskUpdate) => void
-  onBlocker?: (taskId: string) => void
+  projectId?: string;
+  runId?: string;
+  enabled?: boolean;
 }
 
-/**
- * Returns { taskStatuses } — a map of task_id → current status
- * Driven purely by real-time events (no initial fetch — combine with server data).
- */
-export function useRealtimeTasks({
-  projectId,
-  onTaskUpdate,
-  onBlocker,
-}: UseRealtimeTasksOptions) {
-  const supabase = createClient()
-  const channelRef = useRef<RealtimeChannel | null>(null)
-  const [taskStatuses, setTaskStatuses] = useState<Record<string, string>>({})
-  const [recentUpdates, setRecentUpdates] = useState<TaskUpdate[]>([])
-  const [isConnected, setIsConnected] = useState(false)
+interface UseRealtimeTasksReturn {
+  tasks: Task[];
+  isLoading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
 
-  const handleTaskChange = useCallback((payload: any) => {
-    const { old: oldRecord, new: newRecord } = payload
-    if (!newRecord) return
+export function useRealtimeTasks(
+  options: UseRealtimeTasksOptions = {}
+): UseRealtimeTasksReturn {
+  const { projectId, runId, enabled = true } = options;
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
-    const oldStatus = oldRecord?.status || null
-    const newStatus = newRecord.status
-    const taskId    = newRecord.id
+  const fetchTasks = useCallback(async () => {
+    if (!enabled) return;
+    
+    try {
+      setIsLoading(true);
+      setError(null);
 
-    if (oldStatus === newStatus) return // No status change
+      let query = supabase
+        .from('tasks')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-    const update: TaskUpdate = {
-      task_id: taskId,
-      old_status: oldStatus,
-      new_status: newStatus,
-      task_name: newRecord.name,
-      event: 'status_change',
+      if (projectId) {
+        query = query.eq('project_id', projectId);
+      }
+      if (runId) {
+        query = query.eq('run_id', runId);
+      }
+
+      const { data, error: queryError } = await query;
+
+      if (queryError) throw new Error(queryError.message);
+      setTasks((data as Task[]) ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('Failed to fetch tasks'));
+    } finally {
+      setIsLoading(false);
     }
-
-    setTaskStatuses(prev => ({ ...prev, [taskId]: newStatus }))
-    setRecentUpdates(prev => [update, ...prev].slice(0, 20))
-
-    onTaskUpdate?.(update)
-
-    if (newStatus === 'blocked') {
-      onBlocker?.(taskId)
-    }
-  }, [onTaskUpdate, onBlocker])
-
-  const handleTaskRunChange = useCallback((payload: any) => {
-    const { new: newRecord } = payload
-    if (!newRecord || newRecord.status !== 'completed') return
-
-    const update: TaskUpdate = {
-      task_id: newRecord.task_id,
-      old_status: null,
-      new_status: 'run_completed',
-      event: 'run_completed',
-    }
-    setRecentUpdates(prev => [update, ...prev].slice(0, 20))
-    onTaskUpdate?.(update)
-  }, [onTaskUpdate])
+  }, [projectId, runId, enabled]);
 
   useEffect(() => {
-    // We need to subscribe at the project level.
-    // For tasks, we filter by project_id in the realtime filter.
-    const channelName = `buildos:project:${projectId}`
+    fetchTasks();
+  }, [fetchTasks]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const channelName = [
+      'realtime:tasks',
+      projectId,
+      runId,
+    ]
+      .filter(Boolean)
+      .join(':');
 
     const channel = supabase
       .channel(channelName)
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*',
           schema: 'public',
           table: 'tasks',
-          filter: `project_id=eq.${projectId}`,
-        },
-        handleTaskChange
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'task_runs',
-        },
-        handleTaskRunChange
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'blockers',
+          ...(projectId ? { filter: `project_id=eq.${projectId}` } : {}),
         },
         (payload) => {
-          const newRecord = payload.new as { task_id: string }
-          if (newRecord?.task_id) {
-            onBlocker?.(newRecord.task_id)
-          }
+          const { eventType, new: newRecord, old: oldRecord } = payload;
+
+          setTasks((prev) => {
+            switch (eventType) {
+              case 'INSERT':
+                return [newRecord as Task, ...prev];
+              case 'UPDATE':
+                return prev.map((t) =>
+                  t.id === (newRecord as Task).id ? (newRecord as Task) : t
+                );
+              case 'DELETE':
+                return prev.filter((t) => t.id !== (oldRecord as Task).id);
+              default:
+                return prev;
+            }
+          });
         }
       )
-      .subscribe((status) => {
-        setIsConnected(status === 'SUBSCRIBED')
-      })
-
-    channelRef.current = channel
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel)
-      channelRef.current = null
-      setIsConnected(false)
-    }
-  }, [projectId, handleTaskChange, handleTaskRunChange, onBlocker])
+      supabase.removeChannel(channel);
+    };
+  }, [projectId, runId, enabled]);
 
-  return { taskStatuses, recentUpdates, isConnected }
+  return { tasks, isLoading, error, refetch: fetchTasks };
 }
