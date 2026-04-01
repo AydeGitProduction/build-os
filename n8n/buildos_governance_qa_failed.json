@@ -128,7 +128,7 @@
         "contentType": "json",
         "body": {
           "severity": "P2",
-          "incident_type": "qa",
+          "incident_type": "workflow",
           "owner_domain": "qa",
           "title": "QA auto-escalation: task {{ $json.task_id }} failed QA {{ $json.fail_count }} times in 24h",
           "description": "Task {{ $json.task_id }} has failed QA {{ $json.fail_count }} consecutive times within 24 hours (threshold: {{ $json.threshold }}). Auto-escalated by G6 governance orchestrator.",

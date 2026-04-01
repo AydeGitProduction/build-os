@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
         // Create G2 incident
         const incidentBody = {
           severity: 'P2',
-          incident_type: 'qa',
+          incident_type: 'workflow',
           owner_domain: 'qa',
           title: `QA auto-escalation: task failed QA ${failCount} times in ${ESCALATION_WINDOW_HOURS}h`,
           description: `Task ${task_id} has failed QA ${failCount} consecutive times within ${ESCALATION_WINDOW_HOURS} hours (threshold: ${QA_FAIL_ESCALATION_THRESHOLD}). Auto-escalated by G6 governance orchestrator.`,
