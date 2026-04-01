@@ -59,6 +59,7 @@ export default function Sidebar() {
   // ── Workspace Switcher state ──────────────────────────────────────
   const [workspaces, setWorkspaces] = useState<Array<{id: string, name: string, slug: string}>>([])
   const [currentWs, setCurrentWs]   = useState<string>('Build OS')
+  const [currentWsId, setCurrentWsId] = useState<string | null>(null)
   const [wsOpen, setWsOpen]          = useState(false)
 
   useEffect(() => {
@@ -68,6 +69,7 @@ export default function Sidebar() {
         if (d?.data?.length) {
           setWorkspaces(d.data)
           setCurrentWs(d.data[0].name)
+          setCurrentWsId(d.data[0].id)
         }
       })
       .catch(() => {/* silently ignore — workspaces are optional */})
@@ -114,14 +116,19 @@ export default function Sidebar() {
             {workspaces.map(ws => (
               <button
                 key={ws.id}
-                onClick={() => { setCurrentWs(ws.name); setWsOpen(false) }}
+                onClick={() => {
+                  setCurrentWs(ws.name)
+                  setCurrentWsId(ws.id)
+                  setWsOpen(false)
+                  router.push('/projects?ws=' + ws.id)
+                }}
                 className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-slate-300 hover:bg-white/5 transition-colors"
               >
                 <div className="flex h-4 w-4 items-center justify-center rounded bg-brand-600 text-white text-xs font-bold shrink-0">
                   {ws.name.charAt(0).toUpperCase()}
                 </div>
                 <span className="truncate">{ws.name}</span>
-                {ws.name === currentWs && (
+                {ws.id === currentWsId && (
                   <span className="ml-auto text-xs text-brand-400">✓</span>
                 )}
               </button>

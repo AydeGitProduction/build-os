@@ -9,7 +9,11 @@ import { Plus, FolderOpen } from 'lucide-react'
 
 export const metadata: Metadata = { title: 'Projects' }
 
-export default async function ProjectsPage() {
+export default async function ProjectsPage({
+  searchParams,
+}: {
+  searchParams?: { ws?: string }
+}) {
   const supabase = await createServerSupabaseClient()
 
   // Auth check
@@ -22,13 +26,19 @@ export default async function ProjectsPage() {
   }
   if (!user) redirect('/login')
 
-  // Fetch projects — simple query, no nested relations that may lack FK definitions
+  const wsId = searchParams?.ws ?? null
+
+  // Fetch projects — filter by workspace when ?ws= param is present
   let projects: any[] = []
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('projects')
-      .select('id, name, slug, description, status, project_type, target_date, updated_at')
+      .select('id, name, slug, description, status, project_type, target_date, updated_at, workspace_id')
       .order('updated_at', { ascending: false })
+    if (wsId) {
+      query = query.eq('workspace_id', wsId)
+    }
+    const { data, error } = await query
     if (!error && data) {
       projects = data
     }
@@ -37,10 +47,23 @@ export default async function ProjectsPage() {
     // Render empty state rather than crash
   }
 
+  // Resolve workspace name for subtitle
+  let wsName: string | null = null
+  if (wsId) {
+    try {
+      const { data } = await supabase
+        .from('workspaces')
+        .select('name')
+        .eq('id', wsId)
+        .single()
+      wsName = data?.name ?? null
+    } catch { /* ignore */ }
+  }
+
   return (
     <>
       <TopBar
-        title="Projects"
+        title={wsName ? wsName : 'Projects'}
         subtitle={`${projects.length} project${projects.length !== 1 ? 's' : ''}`}
         actions={
           <Link href="/projects/new">
