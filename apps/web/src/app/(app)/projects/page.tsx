@@ -69,7 +69,9 @@ export default async function ProjectsPage() {
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {projects.map((project: any) => (
-              <ProjectCard key={project.id} project={project} />
+              <Link key={project.id} href={`/projects/${project.id}`} className="block">
+                <ProjectCard project={project} />
+              </Link>
             ))}
           </div>
         )}
