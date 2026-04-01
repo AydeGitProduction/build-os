@@ -36,9 +36,9 @@ const STALE_RUN_THRESHOLD_MS = 600_000 // 600 seconds (10 minutes)
 // ── Awaiting-Review Sweep ─────────────────────────────────────────────────────
 // When auto-QA from agent/output fails silently (network error, Vercel timeout,
 // cold start), tasks stay stuck in "awaiting_review" indefinitely.
-// This sweep runs on every tick and submits auto-QA for any task that has been
-// in "awaiting_review" for >90s — giving agent/output's own auto-QA time to run
-// before we step in.
+// This sweep runs on every tick and submits REAL QA evaluation (Block G3) for
+// any task that has been in "awaiting_review" for >90s.
+// REMOVED: unconditional score=88 pass. Replaced with real QA evaluator.
 const AWAITING_REVIEW_SWEEP_THRESHOLD_MS = 90_000 // 90 seconds
 
 async function sweepAwaitingReviewTasks(
@@ -51,7 +51,7 @@ async function sweepAwaitingReviewTasks(
     const cutoff = new Date(Date.now() - AWAITING_REVIEW_SWEEP_THRESHOLD_MS).toISOString()
     const { data: stuckTasks } = await admin
       .from('tasks')
-      .select('id, updated_at')
+      .select('id, title, description, task_type, agent_role, retry_count, max_retries, project_id, updated_at')
       .eq('project_id', projectId)
       .eq('status', 'awaiting_review')
       .lt('updated_at', cutoff)
@@ -59,34 +59,60 @@ async function sweepAwaitingReviewTasks(
 
     if (!stuckTasks || stuckTasks.length === 0) return 0
 
-    console.log(`[tick] Sweep: ${stuckTasks.length} task(s) stuck in awaiting_review — submitting auto-QA`)
+    console.log(`[tick] Sweep: ${stuckTasks.length} task(s) stuck in awaiting_review — running real QA (G3)`)
+
+    const { runFullQAPipeline } = await import('@/lib/qa-evaluator')
 
     let swept = 0
     for (const task of stuckTasks) {
       try {
+        // Fetch latest agent output
+        const { data: latestOutput } = await admin
+          .from('agent_outputs')
+          .select('raw_text, id')
+          .eq('task_id', task.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        const qaInput = {
+          task_id: task.id,
+          project_id: task.project_id as string | null,
+          task_type: task.task_type || 'code',
+          agent_role: task.agent_role || 'backend_engineer',
+          title: task.title || '',
+          description: task.description || null,
+          retry_count: task.retry_count || 0,
+          max_retries: task.max_retries || 3,
+          raw_output: latestOutput?.raw_text || null,
+        }
+
+        const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
+
+        // Submit to qa/verdict route to handle task status transition
+        const verdictForSubmission = qaResult.verdict === 'RETRY_REQUIRED' ? 'fail' : qaResult.verdict.toLowerCase()
         const res = await fetch(`${baseUrl}/api/qa/verdict`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Buildos-Secret': secret,
-          },
+          headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': secret },
           body: JSON.stringify({
             task_id: task.id,
-            verdict: 'pass',
-            score: 88,
+            verdict: verdictForSubmission,
+            score: qaResult.score,
             agent_role: 'qa_security_auditor',
             idempotency_key: `sweep-qa:${task.id}:${Date.now()}`,
+            issues: qaResult.verdict !== 'PASS' ? [qaResult.notes.slice(0, 500)] : [],
+            suggestions: qaResult.suggestion_for_task ? [qaResult.suggestion_for_task] : [],
           }),
         })
         if (res.ok) {
           swept++
-          console.log(`[tick] Sweep: auto-QA submitted for task ${task.id}`)
+          console.log(`[tick] Sweep: real QA ${qaResult.verdict} (score=${qaResult.score}) for task ${task.id}`)
         } else {
           const err = await res.text().catch(() => 'unknown')
-          console.warn(`[tick] Sweep: auto-QA failed for task ${task.id} (${res.status}): ${err.slice(0, 100)}`)
+          console.warn(`[tick] Sweep: QA verdict submission failed for task ${task.id} (${res.status}): ${err.slice(0, 100)}`)
         }
       } catch (err) {
-        console.warn(`[tick] Sweep: fetch error for task ${task.id}:`, err)
+        console.warn(`[tick] Sweep: QA evaluation error for task ${task.id}:`, err)
       }
     }
     return swept

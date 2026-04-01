@@ -417,11 +417,27 @@ export async function POST(request: NextRequest) {
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL ||
         (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
 
-      // a) Auto-submit QA verdict for this task (autonomous QA path)
+      // a) Run REAL QA evaluation (Block G3) — replaces unconditional score=88 pass
       // Awaited (not fire-and-forget) to ensure verdict is recorded before
       // the Vercel function context is torn down on response.
       const agentOutputId = agentOutput?.id || null
       try {
+        const { runFullQAPipeline } = await import('@/lib/qa-evaluator')
+        const qaInput = {
+          task_id,
+          project_id: task.project_id as string | null,
+          task_type: task.task_type || 'code',
+          agent_role: (agent_role || task.agent_role || 'backend_engineer') as string,
+          title: task.title || '',
+          description: task.description || null,
+          retry_count: task.retry_count || 0,
+          max_retries: task.max_retries || 3,
+          raw_output: (agentOutput as { raw_text?: string | null } | null)?.raw_text || raw_text || null,
+        }
+        const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
+
+        // Submit verdict to existing qa/verdict route to handle task status transition
+        const verdictForSubmission = qaResult.verdict === 'RETRY_REQUIRED' ? 'fail' : qaResult.verdict.toLowerCase()
         await fetch(`${baseUrl}/api/qa/verdict`, {
           method: 'POST',
           headers: {
@@ -430,16 +446,36 @@ export async function POST(request: NextRequest) {
           },
           body: JSON.stringify({
             task_id,
-            verdict: 'pass',
-            score: 88,
+            verdict: verdictForSubmission,
+            score: qaResult.score,
             agent_output_id: agentOutputId,
             agent_role: agent_role || task.agent_role || 'qa_security_auditor',
             idempotency_key: `auto-qa:${task_id}:${task_run_id}`,
+            issues: qaResult.verdict !== 'PASS' ? [qaResult.notes] : [],
+            suggestions: qaResult.suggestion_for_task ? [qaResult.suggestion_for_task] : [],
           }),
         })
-        console.log(`[agent/output] Auto-QA verdict submitted for task ${task_id}`)
-      } catch {
-        console.warn(`[agent/output] Auto-QA verdict failed for task ${task_id} — will need manual review`)
+        console.log(`[agent/output] Real QA verdict: ${qaResult.verdict} (score=${qaResult.score}) for task ${task_id}`)
+      } catch (qaErr) {
+        console.warn(`[agent/output] Real QA evaluation failed for task ${task_id}:`, qaErr)
+        // Fallback: submit a BLOCKED verdict rather than a fake pass
+        try {
+          await fetch(`${baseUrl}/api/qa/verdict`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': BUILDOS_SECRET },
+            body: JSON.stringify({
+              task_id,
+              verdict: 'fail',
+              score: 0,
+              agent_output_id: agentOutputId,
+              agent_role: agent_role || task.agent_role || 'qa_security_auditor',
+              idempotency_key: `auto-qa-fallback:${task_id}:${task_run_id}`,
+              issues: ['QA evaluator threw an exception — task blocked for manual review'],
+            }),
+          })
+        } catch {
+          console.warn(`[agent/output] Fallback QA verdict also failed for task ${task_id}`)
+        }
       }
 
       // b) Dependency unlock + orchestration tick

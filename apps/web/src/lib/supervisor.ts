@@ -399,31 +399,62 @@ export async function executeAutoFix(
       }
 
       case 'submit_qa_verdict': {
+        // Block G3: Replaced unconditional score=88 with real QA evaluator
         const reviewThreshold = new Date(Date.now() - SUPERVISOR_POLICY.STUCK_REVIEW_SECONDS * 1000).toISOString()
         const { data: stuckTasks } = await admin
           .from('tasks')
-          .select('id')
+          .select('id, title, description, task_type, agent_role, retry_count, max_retries, project_id')
           .eq('project_id', projectId)
           .eq('status', 'awaiting_review')
           .lt('updated_at', reviewThreshold)
 
         if (!stuckTasks?.length) return { success: true, message: 'No stuck review tasks' }
 
+        const { runFullQAPipeline } = await import('./qa-evaluator')
         let swept = 0
         for (const task of stuckTasks) {
-          const res = await fetch(`${baseUrl}/api/qa/verdict`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': secret },
-            body: JSON.stringify({
+          try {
+            // Fetch latest agent output for this task
+            const { data: latestOutput } = await admin
+              .from('agent_outputs')
+              .select('raw_text')
+              .eq('task_id', task.id)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .single()
+
+            const qaInput = {
               task_id: task.id,
-              verdict: 'pass',
-              score: 88,
-              idempotency_key: `supervisor-qa:${task.id}:${Date.now()}`,
-            }),
-          })
-          if (res.ok) swept++
+              project_id: task.project_id as string | null,
+              task_type: task.task_type || 'code',
+              agent_role: task.agent_role || 'backend_engineer',
+              title: task.title || '',
+              description: task.description || null,
+              retry_count: task.retry_count || 0,
+              max_retries: task.max_retries || 3,
+              raw_output: latestOutput?.raw_text || null,
+            }
+
+            const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
+
+            const verdictForSubmission = qaResult.verdict === 'RETRY_REQUIRED' ? 'fail' : qaResult.verdict.toLowerCase()
+            const res = await fetch(`${baseUrl}/api/qa/verdict`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': secret },
+              body: JSON.stringify({
+                task_id: task.id,
+                verdict: verdictForSubmission,
+                score: qaResult.score,
+                idempotency_key: `supervisor-qa:${task.id}:${Date.now()}`,
+                issues: qaResult.verdict !== 'PASS' ? [qaResult.notes.slice(0, 500)] : [],
+              }),
+            })
+            if (res.ok) swept++
+          } catch {
+            // Non-fatal: log and continue
+          }
         }
-        return { success: true, message: `Auto-QA submitted for ${swept}/${stuckTasks.length} tasks` }
+        return { success: true, message: `Real QA (G3) submitted for ${swept}/${stuckTasks.length} tasks` }
       }
 
       case 'release_locks': {
