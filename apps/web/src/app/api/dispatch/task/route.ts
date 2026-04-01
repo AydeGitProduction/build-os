@@ -145,6 +145,32 @@ export async function POST(request: NextRequest) {
           if (!stubResult.success) {
             const errMsg = `G4 stub gate: failed to create stub for ${filePath} — ${stubResult.error}`
             console.error(`[dispatch/task] ${errMsg}`)
+
+            // ── G4→G6 AUTO-TRIGGER: commit_failure on stub gate failure ───────────
+            // Non-fatal: fire commit-failure governance trigger (RULE G6-1)
+            try {
+              const g6BaseUrl = process.env.NEXT_PUBLIC_APP_URL ||
+                (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+              fetch(`${g6BaseUrl}/api/governance/trigger/commit-failure`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Buildos-Secret': BUILDOS_INTERNAL_SECRET,
+                },
+                body: JSON.stringify({
+                  task_id: task.id,
+                  project_id: task.project_id ?? null,
+                  commit_sha: null,
+                  reason: `G4 stub gate failure: ${stubResult.error}`,
+                  file_path: filePath,
+                }),
+              }).catch((err) =>
+                console.warn('[dispatch/task] G4→G6 commit-failure trigger failed (non-fatal):', err)
+              )
+            } catch (g6Err) {
+              console.warn('[dispatch/task] G4→G6 commit-failure trigger setup failed (non-fatal):', g6Err)
+            }
+
             await completeIdempotency(admin, idempotencyKey, operation, { error: errMsg }, false)
             return NextResponse.json({ error: errMsg }, { status: 500 })
           }
