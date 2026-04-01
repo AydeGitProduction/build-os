@@ -143,7 +143,21 @@ CREATE POLICY incident_fixes_auth_read ON incident_fixes
 
 COMMENT ON TABLE incident_fixes IS 'Block G2: Fix records. permanent_prevention_added must be true for P0/P1 before closure.';
 
--- ─── 5. Verify tables created ────────────────────────────────────────────────
+-- ─── 5. Grant sequence + table permissions ───────────────────────────────────
+-- Required: Supabase service_role needs explicit GRANT on sequences (not covered by RLS policies)
+
+GRANT USAGE, SELECT ON SEQUENCE incident_code_seq TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE incident_code_seq TO authenticated;
+GRANT USAGE, SELECT ON SEQUENCE incident_code_seq TO anon;
+
+GRANT ALL ON TABLE incidents TO service_role;
+GRANT ALL ON TABLE incident_root_causes TO service_role;
+GRANT ALL ON TABLE incident_fixes TO service_role;
+GRANT SELECT ON TABLE incidents TO authenticated;
+GRANT SELECT ON TABLE incident_root_causes TO authenticated;
+GRANT SELECT ON TABLE incident_fixes TO authenticated;
+
+-- ─── 6. Verify tables created ────────────────────────────────────────────────
 
 DO $$
 DECLARE
