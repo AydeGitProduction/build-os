@@ -1,0 +1,193 @@
+{
+  "name": "BuildOS Governance — Release Gate (G6)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-governance-release-gate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g6-rg-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "webhookId": "g6-rg-wh-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst body2 = body.body || body;\n\nconst project_id = body2.project_id || null;\nconst gate_name = body2.gate_name || 'pre-deploy';\nconst checked_by = body2.checked_by || 'g6-governance-orchestrator';\n\nif (!project_id && !gate_name) {\n  throw new Error('release_gate event requires project_id or gate_name');\n}\n\nreturn [{ json: { project_id, gate_name, checked_by, received_at: new Date().toISOString() } }];"
+      },
+      "id": "g6-rg-002",
+      "name": "Validate Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/incidents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "status", "value": "open" },
+            { "name": "severity", "value": "P0" },
+            { "name": "limit", "value": "10" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-rg-003",
+      "name": "Check A: Open P0 Incidents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/incidents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "status", "value": "open" },
+            { "name": "severity", "value": "P1" },
+            { "name": "limit", "value": "10" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-rg-004",
+      "name": "Check B: Open P1 Incidents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 400]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "event_type", "value": "commit_failure" },
+            { "name": "limit", "value": "100" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-rg-005",
+      "name": "Check C: Recent Commit Failures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all check results\nconst p0Result = $('Check A: Open P0 Incidents').first().json;\nconst p1Result = $('Check B: Open P1 Incidents').first().json;\nconst commitResult = $('Check C: Recent Commit Failures').first().json;\n\nconst p0Incidents = (p0Result.data || p0Result || []);\nconst p0Count = Array.isArray(p0Incidents) ? p0Incidents.length : 0;\n\nconst p1Incidents = (p1Result.data || p1Result || []);\nconst p1Count = Array.isArray(p1Incidents) ? p1Incidents.length : 0;\n\nconst commitEvents = (commitResult.data || commitResult || []);\nconst cutoff7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);\nconst recentCommitFailures = Array.isArray(commitEvents)\n  ? commitEvents.filter(e => { try { return new Date(e.created_at) > cutoff7d; } catch { return false; } })\n  : [];\nconst commitFailCount = recentCommitFailures.length;\n\nconst checks = {\n  check_a_no_p0_incidents: { passed: p0Count === 0, detail: `Open P0 incidents: ${p0Count}` },\n  check_b_no_p1_incidents: { passed: p1Count === 0, detail: `Open P1 incidents: ${p1Count}` },\n  check_c_commit_failures: { passed: commitFailCount < 5, detail: `Commit failures (7d): ${commitFailCount} (threshold: 5)` }\n};\n\nconst criticalFailed = !checks.check_a_no_p0_incidents.passed || !checks.check_b_no_p1_incidents.passed;\nconst warningFailed = !checks.check_c_commit_failures.passed;\n\nlet gate_status = 'passed';\nif (criticalFailed) gate_status = 'failed';\nelse if (warningFailed) gate_status = 'pending';\n\nconst evidence = Object.entries(checks)\n  .map(([k, v]) => `${v.passed ? 'PASS' : 'FAIL'} ${k}: ${v.detail}`)\n  .join('; ');\n\nreturn [{\n  json: {\n    gate_status,\n    evidence_summary: evidence,\n    checks,\n    project_id: $('Validate Event').first().json.project_id,\n    gate_name: $('Validate Event').first().json.gate_name,\n    checked_by: $('Validate Event').first().json.checked_by\n  }\n}];"
+      },
+      "id": "g6-rg-006",
+      "name": "Evaluate Gate Checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/release-gates",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "project_id": "={{ $json.project_id }}",
+          "gate_name": "={{ $json.gate_name }}",
+          "gate_status": "={{ $json.gate_status }}",
+          "evidence_summary": "={{ $json.evidence_summary }}",
+          "checked_by": "={{ $json.checked_by }}"
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-rg-007",
+      "name": "Write to G5 release_gate_checks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, event: 'release_gate', gate_status: $('Evaluate Gate Checks').first().json.gate_status, evidence_summary: $('Evaluate Gate Checks').first().json.evidence_summary, gate_name: $('Evaluate Gate Checks').first().json.gate_name }) }}"
+      },
+      "id": "g6-rg-008",
+      "name": "Respond with Gate Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1320, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Validate Event", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Event": {
+      "main": [
+        [
+          { "node": "Check A: Open P0 Incidents", "type": "main", "index": 0 },
+          { "node": "Check B: Open P1 Incidents", "type": "main", "index": 0 },
+          { "node": "Check C: Recent Commit Failures", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check A: Open P0 Incidents": {
+      "main": [[{ "node": "Evaluate Gate Checks", "type": "main", "index": 0 }]]
+    },
+    "Check B: Open P1 Incidents": {
+      "main": [[{ "node": "Evaluate Gate Checks", "type": "main", "index": 1 }]]
+    },
+    "Check C: Recent Commit Failures": {
+      "main": [[{ "node": "Evaluate Gate Checks", "type": "main", "index": 2 }]]
+    },
+    "Evaluate Gate Checks": {
+      "main": [[{ "node": "Write to G5 release_gate_checks", "type": "main", "index": 0 }]]
+    },
+    "Write to G5 release_gate_checks": {
+      "main": [[{ "node": "Respond with Gate Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "buildos-g6-release-gate",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": [{ "name": "buildos-governance" }, { "name": "g6" }]
+}

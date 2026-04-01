@@ -167,6 +167,28 @@ export async function POST(request: NextRequest) {
 
     console.info(`[governance/incidents POST] Created ${data.incident_code}: ${title}`)
 
+    // ── G6 TRIGGER: fire incident-created governance trigger ──────────────────
+    // Non-fatal: G6 trigger failure must never block incident creation (RULE G6-1)
+    try {
+      const g6BaseUrl = process.env.NEXT_PUBLIC_APP_URL ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+      const g6Secret = (process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || '')
+      fetch(`${g6BaseUrl}/api/governance/trigger/incident-created`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': g6Secret },
+        body: JSON.stringify({
+          incident_id: data.id,
+          incident_code: data.incident_code ?? null,
+          severity: data.severity,
+          incident_type: data.incident_type,
+          task_id: body.task_id ?? related_task_id ?? null,
+          title: data.title,
+        }),
+      }).catch((err) => console.warn('[governance/incidents POST] G6 incident-created trigger failed (non-fatal):', err))
+    } catch (g6Err) {
+      console.warn('[governance/incidents POST] G6 trigger setup failed (non-fatal):', g6Err)
+    }
+
     return NextResponse.json({ data }, { status: 201 })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Internal server error'

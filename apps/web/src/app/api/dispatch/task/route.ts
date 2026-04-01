@@ -448,6 +448,33 @@ export async function POST(request: NextRequest) {
       console.warn('[dispatch/task] G5 governance handoff_events insert failed (non-fatal):', govErr)
     }
 
+    // ── G6 TRIGGER: fire task-created governance trigger ──────────────────────
+    // Non-fatal: G6 trigger failure must never block dispatch (RULE G6-1)
+    try {
+      const g6BaseUrl = process.env.NEXT_PUBLIC_APP_URL ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+      const g6Secret = BUILDOS_INTERNAL_SECRET || ''
+      fetch(`${g6BaseUrl}/api/governance/trigger/task-created`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': g6Secret },
+        body: JSON.stringify({
+          task_id: task.id,
+          project_id: task.project_id ?? null,
+          agent_role: task.agent_role ?? null,
+          from_stage: 'intake',
+          to_stage: 'dispatch',
+          metadata: {
+            task_run_id: taskRunId,
+            dispatch_method: dispatchMethod,
+            routing_model: routingDecision.model,
+            routing_rule: routingDecision.rule_name,
+          },
+        }),
+      }).catch((err) => console.warn('[dispatch/task] G6 task-created trigger failed (non-fatal):', err))
+    } catch (g6Err) {
+      console.warn('[dispatch/task] G6 trigger setup failed (non-fatal):', g6Err)
+    }
+
     const result = {
       task_id:          task.id,
       task_run_id:      taskRunId,

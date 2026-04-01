@@ -221,6 +221,46 @@ export async function POST(request: NextRequest) {
       console.warn('[qa/verdict] G5 governance task_events insert failed (non-fatal):', govErr)
     }
 
+    // ── G6 TRIGGER: fire qa-failed or task-completed governance trigger ────────
+    // Non-fatal: G6 trigger failure must never block the verdict response (RULE G6-1)
+    try {
+      const g6BaseUrl = process.env.NEXT_PUBLIC_APP_URL ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+      const g6Secret = BUILDOS_SECRET || ''
+
+      if (!passed) {
+        // FAIL verdict → fire qa-failed trigger (may escalate to P2 incident)
+        fetch(`${g6BaseUrl}/api/governance/trigger/qa-failed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': g6Secret },
+          body: JSON.stringify({
+            task_id,
+            project_id: task.project_id ?? null,
+            verdict: verdictNorm,
+            score: score ?? null,
+            agent_role: agent_role || 'qa_security_auditor',
+            issues: issues || [],
+          }),
+        }).catch((err) => console.warn('[qa/verdict] G6 qa-failed trigger failed (non-fatal):', err))
+      } else {
+        // PASS verdict → fire task-completed trigger
+        fetch(`${g6BaseUrl}/api/governance/trigger/task-completed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': g6Secret },
+          body: JSON.stringify({
+            task_id,
+            project_id: task.project_id ?? null,
+            final_status: newStatus,
+            verdict: verdictNorm,
+            score: score ?? null,
+            agent_role: agent_role || 'qa_security_auditor',
+          }),
+        }).catch((err) => console.warn('[qa/verdict] G6 task-completed trigger failed (non-fatal):', err))
+      }
+    } catch (g6Err) {
+      console.warn('[qa/verdict] G6 trigger setup failed (non-fatal):', g6Err)
+    }
+
     const result = {
       qa_verdict_id: qaVerdict.id,
       task_id,

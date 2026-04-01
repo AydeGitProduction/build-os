@@ -1,0 +1,113 @@
+{
+  "name": "BuildOS Governance — Task Created (G6)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-governance-task-created",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g6-tc-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "g6-tc-wh-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst body2 = body.body || body;\n\nconst task_id = body2.task_id;\nconst project_id = body2.project_id || null;\nconst agent_role = body2.agent_role || 'unknown';\nconst task_run_id = body2.task_run_id || null;\nconst dispatch_method = body2.dispatch_method || 'n8n_webhook';\n\nif (!task_id) throw new Error('task_created event missing required field: task_id');\n\nreturn [{ json: { task_id, project_id, agent_role, task_run_id, dispatch_method, received_at: new Date().toISOString() } }];"
+      },
+      "id": "g6-tc-002",
+      "name": "Validate Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task_id": "={{ $json.task_id }}",
+          "project_id": "={{ $json.project_id }}",
+          "event_type": "pipeline_entry",
+          "actor_type": "system",
+          "actor_id": "g6-governance-orchestrator",
+          "details": {
+            "agent_role": "={{ $json.agent_role }}",
+            "task_run_id": "={{ $json.task_run_id }}",
+            "dispatch_method": "={{ $json.dispatch_method }}",
+            "n8n_workflow": "buildos-governance-task-created"
+          }
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-tc-003",
+      "name": "Log Pipeline Entry to G5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/handoffs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task_id": "={{ $('Validate Event').first().json.task_id }}",
+          "from_role": "orchestrator",
+          "to_role": "={{ $('Validate Event').first().json.agent_role }}",
+          "handoff_type": "dispatch",
+          "notes": "G6 governance: task entered pipeline via {{ $('Validate Event').first().json.dispatch_method }}"
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-tc-004",
+      "name": "Log Handoff to G5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"event\": \"task_created\", \"task_id\": \"{{ $('Validate Event').first().json.task_id }}\" }"
+      },
+      "id": "g6-tc-005",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1080, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate Event", "type": "main", "index": 0 }]] },
+    "Validate Event": { "main": [[{ "node": "Log Pipeline Entry to G5", "type": "main", "index": 0 }]] },
+    "Log Pipeline Entry to G5": { "main": [[{ "node": "Log Handoff to G5", "type": "main", "index": 0 }]] },
+    "Log Handoff to G5": { "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "buildos-g6-task-created",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": [{ "name": "buildos-governance" }, { "name": "g6" }]
+}

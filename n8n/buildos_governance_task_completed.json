@@ -1,0 +1,85 @@
+{
+  "name": "BuildOS Governance — Task Completed (G6)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-governance-task-completed",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g6-tcomp-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "g6-tcomp-wh-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst body2 = body.body || body;\n\nconst task_id = body2.task_id;\nconst project_id = body2.project_id || null;\nconst final_status = body2.final_status || 'completed';\nconst verdict = body2.verdict || 'PASS';\nconst score = body2.score !== undefined ? body2.score : null;\nconst agent_role = body2.agent_role || null;\n\nif (!task_id) throw new Error('task_completed event missing required field: task_id');\n\nreturn [{ json: { task_id, project_id, final_status, verdict, score, agent_role, received_at: new Date().toISOString() } }];"
+      },
+      "id": "g6-tcomp-002",
+      "name": "Validate Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task_id": "={{ $json.task_id }}",
+          "project_id": "={{ $json.project_id }}",
+          "event_type": "pipeline_exit",
+          "actor_type": "system",
+          "actor_id": "g6-governance-orchestrator",
+          "details": {
+            "final_status": "={{ $json.final_status }}",
+            "verdict": "={{ $json.verdict }}",
+            "score": "={{ $json.score }}",
+            "agent_role": "={{ $json.agent_role }}",
+            "n8n_workflow": "buildos-governance-task-completed"
+          }
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-tcomp-003",
+      "name": "Log Pipeline Exit to G5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"event\": \"task_completed\", \"task_id\": \"{{ $('Validate Event').first().json.task_id }}\", \"final_status\": \"{{ $('Validate Event').first().json.final_status }}\" }"
+      },
+      "id": "g6-tcomp-004",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [860, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate Event", "type": "main", "index": 0 }]] },
+    "Validate Event": { "main": [[{ "node": "Log Pipeline Exit to G5", "type": "main", "index": 0 }]] },
+    "Log Pipeline Exit to G5": { "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "buildos-g6-task-completed",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": [{ "name": "buildos-governance" }, { "name": "g6" }]
+}

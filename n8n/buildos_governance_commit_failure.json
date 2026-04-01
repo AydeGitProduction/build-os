@@ -1,0 +1,197 @@
+{
+  "name": "BuildOS Governance — Commit Failure (G6)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-governance-commit-failure",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g6-cf-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "g6-cf-wh-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst body2 = body.body || body;\n\nconst task_id = body2.task_id;\nconst commit_sha = body2.commit_sha || null;\nconst reason = body2.reason || 'commit_verified=false';\nconst project_id = body2.project_id || null;\nconst file_path = body2.file_path || null;\n\nif (!task_id) {\n  throw new Error('commit_failure event missing required field: task_id');\n}\n\nreturn [{ json: { task_id, commit_sha, reason, project_id, file_path, received_at: new Date().toISOString() } }];"
+      },
+      "id": "g6-cf-002",
+      "name": "Validate Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task_id": "={{ $json.task_id }}",
+          "project_id": "={{ $json.project_id }}",
+          "event_type": "commit_failure",
+          "actor_type": "system",
+          "actor_id": "g6-governance-orchestrator",
+          "details": {
+            "commit_sha": "={{ $json.commit_sha }}",
+            "reason": "={{ $json.reason }}",
+            "file_path": "={{ $json.file_path }}",
+            "n8n_workflow": "buildos-governance-commit-failure"
+          }
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-cf-003",
+      "name": "Log to G5 task_events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "task_id", "value": "={{ $('Validate Event').first().json.task_id }}" },
+            { "name": "event_type", "value": "commit_failure" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-cf-004",
+      "name": "Count Commit Failures (Escalation Check)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst events = resp.data || resp || [];\nconst eventList = Array.isArray(events) ? events : [];\n\nconst cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);\nconst recentFailures = eventList.filter(e => {\n  try { return new Date(e.created_at) > cutoff; } catch { return false; }\n});\n\nconst failCount = recentFailures.length;\nconst COMMIT_FAIL_THRESHOLD = 3;\nconst shouldEscalate = failCount >= COMMIT_FAIL_THRESHOLD;\n\nreturn [{\n  json: {\n    fail_count: failCount,\n    threshold: COMMIT_FAIL_THRESHOLD,\n    should_escalate: shouldEscalate,\n    task_id: $('Validate Event').first().json.task_id\n  }\n}];"
+      },
+      "id": "g6-cf-005",
+      "name": "Evaluate Escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ $json.should_escalate }}", "value2": true }
+          ]
+        }
+      },
+      "id": "g6-cf-006",
+      "name": "Threshold Exceeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/incidents",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "severity": "P1",
+          "incident_type": "logic",
+          "owner_domain": "backend",
+          "title": "Commit auto-escalation: task {{ $json.task_id }} failed commit verification {{ $json.fail_count }} times in 24h",
+          "description": "Task {{ $json.task_id }} has failed commit verification {{ $json.fail_count }} times within 24 hours (threshold: {{ $json.threshold }}). Potential code generation or GitHub delivery issue. Auto-escalated by G6.",
+          "task_id": "={{ $json.task_id }}",
+          "auto_generated": true,
+          "source": "g6-governance-orchestrator"
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-cf-007",
+      "name": "Create G2 Incident (Escalate P1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1520, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"event\": \"commit_failure\", \"escalated\": false, \"fail_count\": {{ $('Evaluate Escalation').first().json.fail_count }} }"
+      },
+      "id": "g6-cf-008",
+      "name": "Respond OK (No Escalation)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1520, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"event\": \"commit_failure\", \"escalated\": true, \"fail_count\": {{ $('Evaluate Escalation').first().json.fail_count }}, \"incident_created\": true }"
+      },
+      "id": "g6-cf-009",
+      "name": "Respond OK (Escalated P1)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1740, 200]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Validate Event", "type": "main", "index": 0 }]]
+    },
+    "Validate Event": {
+      "main": [[{ "node": "Log to G5 task_events", "type": "main", "index": 0 }]]
+    },
+    "Log to G5 task_events": {
+      "main": [[{ "node": "Count Commit Failures (Escalation Check)", "type": "main", "index": 0 }]]
+    },
+    "Count Commit Failures (Escalation Check)": {
+      "main": [[{ "node": "Evaluate Escalation", "type": "main", "index": 0 }]]
+    },
+    "Evaluate Escalation": {
+      "main": [[{ "node": "Threshold Exceeded?", "type": "main", "index": 0 }]]
+    },
+    "Threshold Exceeded?": {
+      "main": [
+        [{ "node": "Create G2 Incident (Escalate P1)", "type": "main", "index": 0 }],
+        [{ "node": "Respond OK (No Escalation)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create G2 Incident (Escalate P1)": {
+      "main": [[{ "node": "Respond OK (Escalated P1)", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "buildos-g6-commit-failure",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": [{ "name": "buildos-governance" }, { "name": "g6" }]
+}

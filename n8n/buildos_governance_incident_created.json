@@ -1,0 +1,148 @@
+{
+  "name": "BuildOS Governance — Incident Created (G6)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "buildos-governance-incident-created",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "g6-ic-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "g6-ic-wh-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\nconst body2 = body.body || body;\n\nconst incident_id = body2.incident_id;\nconst incident_code = body2.incident_code || null;\nconst severity = body2.severity || 'P2';\nconst incident_type = body2.incident_type || 'logic';\nconst task_id = body2.task_id || null;\nconst title = body2.title || 'Unknown incident';\n\nif (!incident_id) throw new Error('incident_created event missing required field: incident_id');\n\nreturn [{ json: { incident_id, incident_code, severity, incident_type, task_id, title, received_at: new Date().toISOString() } }];"
+      },
+      "id": "g6-ic-002",
+      "name": "Validate Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/settings-changes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "setting_area": "incidents",
+          "setting_key": "={{ $json.incident_code || $json.incident_id }}",
+          "previous_value": "none",
+          "new_value": "open",
+          "reason": "Incident {{ $json.incident_code || $json.incident_id }} opened: {{ $json.title }} (severity: {{ $json.severity }}, type: {{ $json.incident_type }})",
+          "changed_by": "g6-governance-orchestrator"
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-ic-003",
+      "name": "Log Incident Open to G5 settings_changes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $('Validate Event').first().json.task_id }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "g6-ic-004",
+      "name": "Has Linked Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [640, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BUILDOS_BASE_URL }}/api/governance/task-events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-Buildos-Secret", "value": "={{ $env.BUILDOS_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "task_id": "={{ $('Validate Event').first().json.task_id }}",
+          "event_type": "incident_linked",
+          "actor_type": "system",
+          "actor_id": "g6-governance-orchestrator",
+          "details": {
+            "incident_id": "={{ $('Validate Event').first().json.incident_id }}",
+            "incident_code": "={{ $('Validate Event').first().json.incident_code }}",
+            "severity": "={{ $('Validate Event').first().json.severity }}",
+            "incident_type": "={{ $('Validate Event').first().json.incident_type }}",
+            "n8n_workflow": "buildos-governance-incident-created"
+          }
+        },
+        "options": { "timeout": 10000 }
+      },
+      "id": "g6-ic-005",
+      "name": "Log Incident Link on Task (G5)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"event\": \"incident_created\", \"incident_id\": \"{{ $('Validate Event').first().json.incident_id }}\", \"severity\": \"{{ $('Validate Event').first().json.severity }}\" }"
+      },
+      "id": "g6-ic-006",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1100, 400]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate Event", "type": "main", "index": 0 }]] },
+    "Validate Event": {
+      "main": [
+        [
+          { "node": "Log Incident Open to G5 settings_changes", "type": "main", "index": 0 },
+          { "node": "Has Linked Task?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Has Linked Task?": {
+      "main": [
+        [{ "node": "Log Incident Link on Task (G5)", "type": "main", "index": 0 }],
+        [{ "node": "Respond OK", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log Incident Open to G5 settings_changes": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    },
+    "Log Incident Link on Task (G5)": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "buildos-g6-incident-created",
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": [{ "name": "buildos-governance" }, { "name": "g6" }]
+}
