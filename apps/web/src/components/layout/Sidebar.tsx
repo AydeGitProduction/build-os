@@ -11,10 +11,7 @@ import {
   LogOut,
   Bot,
   FolderKanban,
-  FileText,
-  GitBranch,
   ListTodo,
-  Layers,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -33,10 +30,7 @@ function getProjectNav(projectId: string): NavItem[] {
   const base = `/projects/${projectId}`
   return [
     { label: 'Overview', href: base, icon: <FolderKanban className="h-4 w-4" /> },
-    { label: 'PRDs', href: `${base}/prds`, icon: <FileText className="h-4 w-4" /> },
     { label: 'Tasks', href: `${base}/tasks`, icon: <ListTodo className="h-4 w-4" /> },
-    { label: 'Branches', href: `${base}/branches`, icon: <GitBranch className="h-4 w-4" /> },
-    { label: 'Stack', href: `${base}/stack`, icon: <Layers className="h-4 w-4" /> },
   ]
 }
 

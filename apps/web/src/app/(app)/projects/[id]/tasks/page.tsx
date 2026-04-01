@@ -47,16 +47,18 @@ export default async function TasksPage({ params }: Props) {
     .eq('project_id', params.id)
     .order('order_index')
 
-  // Flatten tasks with epic/feature context
+  // Flatten tasks with epic/feature context.
+  // LiveTaskBoard.Task uses `name` (not `title`) — map the DB field accordingly.
   const tasks = (epics || []).flatMap((epic: any) =>
     (epic.features || []).flatMap((feature: any) =>
       (feature.tasks || []).map((task: any) => ({
         ...task,
+        name: task.title,          // LiveTaskBoard expects `name`
         feature: {
           id: feature.id,
-          title: feature.title,
+          name: feature.title,     // LiveTaskBoard.Task.feature expects `name`
           slug: feature.slug,
-          epic: { id: epic.id, title: epic.title, slug: epic.slug },
+          epic: { id: epic.id, name: epic.title, slug: epic.slug },
         },
       }))
     )
