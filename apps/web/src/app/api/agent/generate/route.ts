@@ -12,6 +12,11 @@ import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/sup
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
 import { commitFilesToGitHub, triggerVercelDeploy } from '@/lib/github-commit'
+import {
+  verifyCommitDelivery,
+  logCommitDelivery,
+  escalateToIncident,
+} from '@/lib/commit-reliability'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Request shape
@@ -257,18 +262,23 @@ export async function POST(request: NextRequest) {
     generationResult.validation.warnings,
   )
 
-  // ── Step 5: GitHub commit (non-fatal) ─────────────────────────────────────
+  // ── Step 5: GitHub commit + G4 Verification Gate ────────────────────────
   // Read the written file contents from project_files table and commit to GitHub.
+  // After commit: verify each file exists in repo (RULE-14, G4 protocol).
+  // Verified failures force task back to 'blocked' — commit failure is NOT non-fatal
+  // for code/schema/test tasks. Evidence is always written to commit_delivery_logs.
   let commitSha: string | null = null
   let commitUrl: string | null = null
   let deployTriggered = false
   let deployUrl: string | null = null
   let commitError: string | null = null
   let deployError: string | null = null
+  let allFilesVerified = true
+
+  const adminForCommit = createAdminSupabaseClient()
 
   try {
-    const admin = createAdminSupabaseClient()
-    const { data: projectFiles } = await admin
+    const { data: projectFiles } = await adminForCommit
       .from('project_files')
       .select('file_path, content')
       .eq('project_id', project_id)
@@ -289,39 +299,178 @@ export async function POST(request: NextRequest) {
         commitSha = commitResult.commitSha ?? null
         commitUrl = commitResult.commitUrl ?? null
 
-        // Log commit — generation_status stays 'files_written' (no 'committed' status in schema)
         console.log(`[agent/generate] GitHub commit: ${commitSha?.slice(0, 8)} — ${patchResult.files_modified.join(', ')}`)
 
-        // ── Step 6: Vercel deploy hook (non-fatal) ────────────────────────────
-        const deployResult = await triggerVercelDeploy()
-        deployTriggered = deployResult.triggered
-        deployUrl = deployResult.deploymentUrl ?? null
-        if (!deployResult.triggered) {
-          deployError = deployResult.error ?? 'Unknown deploy error'
-          console.warn('[agent/generate] Deploy hook skipped:', deployError)
+        // ── G4: Verify each committed file exists in repo ─────────────────────
+        for (const filePath of patchResult.files_modified) {
+          const verifyResult = await verifyCommitDelivery(filePath)
+
+          const logId = await logCommitDelivery(adminForCommit, {
+            task_id,
+            project_id,
+            repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+            branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+            target_path: filePath,
+            stub_created: false, // stub is set at dispatch time; this is post-commit verify
+            token_refreshed: true, // verifyCommitDelivery always calls ensureFreshToken
+            commit_sha: commitSha,
+            commit_verified: verifyResult.verified,
+            verification_notes: verifyResult.notes,
+          })
+
+          if (!verifyResult.verified) {
+            allFilesVerified = false
+            console.error(
+              `[agent/generate] ⚠ G4 VERIFICATION FAILED: ${filePath} — ${verifyResult.notes}`
+            )
+
+            // Escalate to incident if failure threshold reached
+            await escalateToIncident(
+              adminForCommit,
+              task_id,
+              project_id,
+              verifyResult.notes,
+              logId,
+            )
+          }
+        }
+
+        // ── G4 enforcement: block task if any file unverified ─────────────────
+        if (!allFilesVerified) {
+          // Force task back to 'blocked' — it must not remain in awaiting_review
+          // with unverified code delivery
+          await adminForCommit
+            .from('tasks')
+            .update({
+              status: 'blocked',
+              failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
+              failure_category: 'commit_delivery',
+            })
+            .eq('id', task_id)
+
+          console.error(
+            `[agent/generate] G4: task ${task_id} forced to 'blocked' — ` +
+            `commit verification failed for ${patchResult.files_modified.join(', ')}`
+          )
+        } else {
+          // ── Step 6: Vercel deploy hook (non-fatal, only on verified commit) ─
+          const deployResult = await triggerVercelDeploy()
+          deployTriggered = deployResult.triggered
+          deployUrl = deployResult.deploymentUrl ?? null
+          if (!deployResult.triggered) {
+            deployError = deployResult.error ?? 'Unknown deploy error'
+            console.warn('[agent/generate] Deploy hook skipped:', deployError)
+          }
         }
       } else {
         commitError = commitResult.error ?? 'Unknown commit error'
-        console.warn('[agent/generate] GitHub commit skipped:', commitError)
+        console.warn('[agent/generate] GitHub commit failed:', commitError)
+        allFilesVerified = false
+
+        // Log failure for each file
+        for (const filePath of patchResult.files_modified) {
+          const logId = await logCommitDelivery(adminForCommit, {
+            task_id,
+            project_id,
+            repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+            branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+            target_path: filePath,
+            stub_created: false,
+            token_refreshed: false,
+            commit_sha: null,
+            commit_verified: false,
+            verification_notes: `Commit failed: ${commitError}`,
+          })
+
+          await escalateToIncident(
+            adminForCommit,
+            task_id,
+            project_id,
+            `Commit failed: ${commitError}`,
+            logId,
+          )
+        }
+
+        // Block task
+        await adminForCommit
+          .from('tasks')
+          .update({
+            status: 'blocked',
+            failure_detail: `G4: GitHub commit failed — ${commitError}`,
+            failure_category: 'commit_delivery',
+          })
+          .eq('id', task_id)
       }
     } else {
       commitError = `project_files returned ${projectFiles?.length ?? 0} rows for paths: ${patchResult.files_modified.join(', ')}`
       console.warn('[agent/generate] No project_files found for commit:', commitError)
+      allFilesVerified = false
+
+      // Log missing files
+      for (const filePath of patchResult.files_modified) {
+        await logCommitDelivery(adminForCommit, {
+          task_id,
+          project_id,
+          repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+          branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+          target_path: filePath,
+          stub_created: false,
+          token_refreshed: false,
+          commit_sha: null,
+          commit_verified: false,
+          verification_notes: `project_files missing: ${commitError}`,
+        })
+      }
     }
   } catch (err) {
-    // Non-fatal: commit failure never blocks file-write success
     commitError = err instanceof Error ? err.message : String(err)
-    console.error('[agent/generate] Post-write commit error (non-fatal):', commitError)
+    allFilesVerified = false
+    console.error('[agent/generate] Commit/verify error:', commitError)
+
+    // Log unexpected error
+    for (const filePath of patchResult.files_modified) {
+      const logId = await logCommitDelivery(adminForCommit, {
+        task_id,
+        project_id,
+        repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+        branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+        target_path: filePath,
+        stub_created: false,
+        token_refreshed: false,
+        commit_sha: null,
+        commit_verified: false,
+        verification_notes: `Exception: ${commitError}`,
+      })
+      await escalateToIncident(
+        adminForCommit,
+        task_id,
+        project_id,
+        `Exception in commit/verify: ${commitError}`,
+        logId,
+      )
+    }
+
+    // Block task
+    await adminForCommit
+      .from('tasks')
+      .update({
+        status: 'blocked',
+        failure_detail: `G4: commit/verify threw exception — ${commitError}`,
+        failure_category: 'commit_delivery',
+      })
+      .eq('id', task_id)
   }
 
   return NextResponse.json({
-    success: true,
+    success: allFilesVerified,
     generation_status: 'files_written' as GenerationStatus,
     files_written: patchResult.files_modified,
     applied_operations: patchResult.applied_operations,
     language: generationResult.language,
     summary: generationResult.summary,
     warnings: generationResult.validation.warnings,
+    // G4 fields
+    commit_verified: allFilesVerified,
     ...(commitSha ? { commit_sha: commitSha, commit_url: commitUrl } : {}),
     ...(commitError ? { commit_error: commitError } : {}),
     deploy_triggered: deployTriggered,

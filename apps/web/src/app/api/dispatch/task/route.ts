@@ -34,6 +34,8 @@ import { RailwayAdapter } from '@/lib/execution-adapter/railway-adapter'
 import { randomUUID } from 'crypto'
 // ERT-P6C: Routing engine
 import { decide as routingDecide, MODEL_IDS } from '@/lib/routing'
+// G4: Stub gate + commit reliability
+import { createStubFile, extractCreatePaths, logCommitDelivery } from '@/lib/commit-reliability'
 
 export async function POST(request: NextRequest) {
   const admin = createAdminSupabaseClient()
@@ -107,6 +109,51 @@ export async function POST(request: NextRequest) {
       const errMsg = `Cannot dispatch task in status "${task.status}". Task must be "ready".`
       await completeIdempotency(admin, idempotencyKey, operation, { error: errMsg }, false)
       return NextResponse.json({ error: errMsg }, { status: 422 })
+    }
+
+    // ── 3b. G4 Stub Gate (RULE-11) ────────────────────────────────────────────
+    // For code/schema/test tasks: detect CREATE intent from context_payload.
+    // If file paths are found, push stub files to GitHub before dispatch.
+    // Stub creation failure blocks dispatch — a task cannot dispatch if its
+    // intended file path cannot be claimed in the repo.
+    const CODE_TASK_TYPES_FOR_STUB = ['code', 'schema', 'test']
+    if (CODE_TASK_TYPES_FOR_STUB.includes(task.task_type ?? '')) {
+      const createPaths = extractCreatePaths(task.context_payload as Record<string, unknown> | null)
+
+      if (createPaths.length > 0) {
+        console.log(`[dispatch/task] G4 stub gate: detected ${createPaths.length} CREATE path(s) for task ${task.id}: ${createPaths.join(', ')}`)
+
+        for (const filePath of createPaths) {
+          const stubResult = await createStubFile(task.id, filePath)
+
+          // Log stub attempt to commit_delivery_logs
+          await logCommitDelivery(admin, {
+            task_id: task.id,
+            project_id: task.project_id,
+            repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+            branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+            target_path: filePath,
+            stub_created: stubResult.success,
+            token_refreshed: stubResult.tokenRefreshed,
+            commit_sha: stubResult.commitSha ?? null,
+            commit_verified: false, // will be set to true after agent completes
+            verification_notes: stubResult.success
+              ? `Stub created: ${stubResult.commitSha?.slice(0, 8)}`
+              : `Stub creation failed: ${stubResult.error}`,
+          })
+
+          if (!stubResult.success) {
+            const errMsg = `G4 stub gate: failed to create stub for ${filePath} — ${stubResult.error}`
+            console.error(`[dispatch/task] ${errMsg}`)
+            await completeIdempotency(admin, idempotencyKey, operation, { error: errMsg }, false)
+            return NextResponse.json({ error: errMsg }, { status: 500 })
+          }
+
+          console.log(`[dispatch/task] G4 stub created: ${filePath} → ${stubResult.commitSha?.slice(0, 8)}`)
+        }
+      } else {
+        console.log(`[dispatch/task] G4 stub gate: no CREATE paths detected in context_payload for task ${task.id} — stub skipped`)
+      }
     }
 
     // ── 4. Create task_run ────────────────────────────────────────────────────
