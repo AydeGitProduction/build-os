@@ -1,3 +1,4 @@
+'use client'
 // src/components/iris/IrisChatHeader.tsx
 import React, { useState } from 'react';
 import type { Phase } from '@/types/phase';

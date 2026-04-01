@@ -1,3 +1,4 @@
+'use client'
 // src/components/PhaseHeaderBar/PhaseHeaderBar.tsx
 
 import React, { useCallback } from 'react';

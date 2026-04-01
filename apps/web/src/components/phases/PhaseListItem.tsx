@@ -1,3 +1,4 @@
+'use client'
 // src/components/phases/PhaseListItem.tsx
 
 import React, { useState } from 'react';

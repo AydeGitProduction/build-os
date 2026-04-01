@@ -1,3 +1,4 @@
+'use client'
 // src/components/tasks/TaskCard.tsx
 
 import React from 'react';

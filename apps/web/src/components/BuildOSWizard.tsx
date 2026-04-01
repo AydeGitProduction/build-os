@@ -1,3 +1,4 @@
+'use client'
 // src/components/BuildOSWizard.tsx (modified sections)
 
 import React, { useRef } from 'react';

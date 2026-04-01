@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { createBrowserSupabaseClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 export default function SettingsPage() {
@@ -10,7 +10,7 @@ export default function SettingsPage() {
 
   const handleSignOut = async () => {
     setLoading(true)
-    const supabase = createBrowserSupabaseClient()
+    const supabase = createClient()
     await supabase.auth.signOut()
     router.push('/login')
   }

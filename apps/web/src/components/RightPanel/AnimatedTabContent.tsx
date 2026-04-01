@@ -1,3 +1,4 @@
+'use client'
 // src/components/RightPanel/AnimatedTabContent.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import styles from './TabPanel.module.css';

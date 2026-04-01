@@ -1,3 +1,4 @@
+'use client'
 // src/components/IrisWorkspace/IrisWorkspace.tsx
 // ── Showing only the relevant sections with diff-style annotations ──────────
 

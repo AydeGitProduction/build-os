@@ -1,3 +1,4 @@
+'use client'
 // src/components/RightPanel/TabPanelMotion.tsx
 import React, { useId, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';

@@ -1,3 +1,4 @@
+'use client'
 // src/components/layout/WizardLayout.tsx
 // (or wherever your three-column layout lives)
 

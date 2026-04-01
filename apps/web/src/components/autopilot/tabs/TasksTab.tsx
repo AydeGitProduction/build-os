@@ -1,3 +1,4 @@
+'use client'
 // src/components/autopilot/tabs/TasksTab.tsx
 
 import React, { useMemo } from "react";

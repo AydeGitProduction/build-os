@@ -1,3 +1,4 @@
+'use client'
 // apps/web/src/components/projects/ProvisioningBadge.tsx
 
 "use client";

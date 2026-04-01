@@ -1,3 +1,4 @@
+'use client'
 // apps/web/src/components/iris/IrisWorkspace.tsx
 "use client";
 

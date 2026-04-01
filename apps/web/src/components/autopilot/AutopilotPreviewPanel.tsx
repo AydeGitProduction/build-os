@@ -1,3 +1,4 @@
+'use client'
 // src/components/autopilot/AutopilotPreviewPanel.tsx
 
 import React, { useState, useCallback } from "react";

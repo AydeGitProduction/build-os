@@ -1,3 +1,4 @@
+'use client'
 // apps/web/src/components/wizard/TasksTab.tsx
 
 "use client";

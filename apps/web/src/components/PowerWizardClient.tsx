@@ -1,3 +1,4 @@
+'use client'
 // apps/web/src/components/PowerWizardClient.tsx
 // RENAMED: was AutopilotClient.tsx → PowerWizardClient.tsx
 // Route: /autopilot → /wizard

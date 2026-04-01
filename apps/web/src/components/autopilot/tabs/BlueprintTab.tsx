@@ -1,3 +1,4 @@
+'use client'
 // src/components/autopilot/tabs/BlueprintTab.tsx
 
 import React, { useState } from "react";

@@ -1,3 +1,4 @@
+'use client'
 // src/components/workspace/CreateWorkspaceModal.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';

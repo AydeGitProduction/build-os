@@ -1,3 +1,4 @@
+'use client'
 // src/components/RightPanel/TabPanel.tsx
 import React, { useId } from 'react';
 import styles from './TabPanel.module.css';

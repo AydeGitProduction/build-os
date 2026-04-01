@@ -1,3 +1,4 @@
+'use client'
 // src/components/phase/PhaseHeaderBar.tsx
 
 import React from 'react';

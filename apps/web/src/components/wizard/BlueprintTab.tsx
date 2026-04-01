@@ -1,3 +1,4 @@
+'use client'
 // apps/web/src/components/wizard/BlueprintTab.tsx
 
 import React, { useEffect, useState, useCallback } from 'react';
