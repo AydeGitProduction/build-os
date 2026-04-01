@@ -576,17 +576,23 @@ export async function getOrchestrationStatus(
   admin: SupabaseClient,
   projectId: string
 ): Promise<OrchestrationStatus> {
-  const [configResult, countsResult, costResult, lastRunResult, totalRunsResult] = await Promise.all([
+  const [configResult, countsResult, costResult, costEventsResult, lastRunResult, totalRunsResult] = await Promise.all([
     getOrchestrationConfig(admin, projectId),
     getTaskCounts(admin, projectId),
     admin.from('cost_models').select('total_cost_usd, estimated_total_usd').eq('project_id', projectId).single(),
+    admin.from('cost_events').select('total_cost_usd').eq('project_id', projectId),
     admin.from('orchestration_runs').select('created_at').eq('project_id', projectId).order('created_at', { ascending: false }).limit(1).single(),
     admin.from('orchestration_runs').select('id', { count: 'exact', head: true }).eq('project_id', projectId),
   ])
 
   const config     = configResult
   const counts     = countsResult
-  const totalCost  = costResult.data?.total_cost_usd ?? 0
+  // Prefer cost_models; if zero/null, fall back to sum of cost_events (same source as Dashboard)
+  const costModelTotal = costResult.data?.total_cost_usd ?? 0
+  const costEventsTotal = ((costEventsResult.data as any[]) || []).reduce(
+    (s: number, c: any) => s + (Number(c.total_cost_usd) || 0), 0
+  )
+  const totalCost  = costModelTotal > 0 ? costModelTotal : costEventsTotal
   const estTotal   = costResult.data?.estimated_total_usd ?? null
   const budgetRem  = config.cost_alert_threshold !== null
     ? config.cost_alert_threshold - totalCost

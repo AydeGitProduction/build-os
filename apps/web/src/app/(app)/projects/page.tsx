@@ -15,16 +15,23 @@ export default async function ProjectsPage() {
   if (!user) redirect('/login')
 
   // Fetch projects with summary stats
-  const { data: rawProjects } = await supabase
-    .from('projects')
-    .select(`
-      id, name, slug, description, status, project_type,
-      target_date, updated_at,
-      workspace:workspaces(id, name, slug),
-      epics(id, status),
-      tasks(id, status)
-    `)
-    .order('updated_at', { ascending: false })
+  let rawProjects: any[] | null = null
+  try {
+    const { data, error } = await supabase
+      .from('projects')
+      .select(`
+        id, name, slug, description, status, project_type,
+        target_date, updated_at,
+        workspace:workspaces(id, name, slug),
+        epics(id, status),
+        tasks(id, status)
+      `)
+      .order('updated_at', { ascending: false })
+    if (!error) rawProjects = data
+  } catch (e) {
+    console.error('[ProjectsPage] Failed to fetch projects:', e)
+    // error.tsx boundary will catch server throws; allow empty state fallback
+  }
 
   // Compute stats
   const projects = (rawProjects || []).map((p: any) => {

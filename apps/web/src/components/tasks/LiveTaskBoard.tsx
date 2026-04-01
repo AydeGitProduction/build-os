@@ -2,18 +2,17 @@
 
 /**
  * LiveTaskBoard — wraps TaskBoard with Supabase Realtime.
- * Merges server-fetched tasks with live status updates.
+ * Merges server-fetched tasks with live status updates from useRealtimeTasks.
  * Provides dispatch controls and toast notifications.
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useRealtimeTasks } from '@/hooks/useRealtimeTasks'
 import { useToast } from '@/hooks/useToast'
 import ToastContainer from '@/components/ui/ToastContainer'
 import TaskBoard from '@/components/tasks/TaskBoard'
 import Button from '@/components/ui/Button'
 import { Wifi, WifiOff, Zap } from 'lucide-react'
-import { snakeToTitle } from '@/lib/utils'
 
 interface Task {
   id: string
@@ -41,45 +40,63 @@ interface LiveTaskBoardProps {
 }
 
 export default function LiveTaskBoard({ initialTasks, projectId }: LiveTaskBoardProps) {
-  const [tasks, setTasks] = useState<Task[]>(initialTasks)
+  const [localTasks, setLocalTasks] = useState<Task[]>(initialTasks)
   const [dispatching, setDispatching] = useState<Record<string, boolean>>({})
   const toast = useToast()
 
   // ── Real-time subscription ────────────────────────────────────────────────
-  const { taskStatuses, isConnected } = useRealtimeTasks({
+  // Hook returns { tasks, isLoading, error, refetch }
+  const { tasks: realtimeTasks, isLoading: realtimeLoading } = useRealtimeTasks({
     projectId,
-    onTaskUpdate: (update) => {
-      // Merge real-time status into local task state
-      setTasks(prev =>
-        prev.map(t =>
-          t.id === update.task_id ? { ...t, status: update.new_status } : t
-        )
-      )
-
-      // Show toast notifications for important transitions
-      const taskName = tasks.find(t => t.id === update.task_id)?.name || 'Task'
-
-      if (update.new_status === 'completed') {
-        toast.success(`✓ "${taskName}" completed`)
-      } else if (update.new_status === 'blocked') {
-        toast.error(`⚠ "${taskName}" is blocked`, 8000)
-      } else if (update.new_status === 'awaiting_review') {
-        toast.info(`"${taskName}" ready for review`)
-      } else if (update.new_status === 'in_progress') {
-        toast.info(`"${taskName}" now in progress`)
-      }
-    },
-    onBlocker: (taskId) => {
-      const taskName = tasks.find(t => t.id === taskId)?.name || 'Task'
-      toast.error(`⛔ Blocker created on "${taskName}"`, 10000)
-    },
   })
 
-  // Apply any real-time overrides to tasks
-  const liveTasks = tasks.map(t => ({
-    ...t,
-    status: taskStatuses[t.id] || t.status,
-  }))
+  // Track previous statuses to detect changes and show toasts
+  const prevStatusesRef = useRef<Record<string, string>>({})
+
+  // Merge live task data from the subscription into local state
+  useEffect(() => {
+    if (!realtimeTasks || realtimeTasks.length === 0) return
+
+    const prevStatuses = prevStatusesRef.current
+    const nextStatuses: Record<string, string> = {}
+
+    // Build a live-status map from the hook's task list
+    const liveStatusMap: Record<string, string> = {}
+    realtimeTasks.forEach((t: any) => {
+      liveStatusMap[t.id] = t.status
+      nextStatuses[t.id] = t.status
+    })
+
+    // Show toasts for status transitions
+    Object.entries(liveStatusMap).forEach(([taskId, newStatus]) => {
+      const prevStatus = prevStatuses[taskId]
+      if (prevStatus && prevStatus !== newStatus) {
+        const taskName = localTasks.find(t => t.id === taskId)?.name || 'Task'
+        if (newStatus === 'completed' || newStatus === 'done') {
+          toast.success(`✓ "${taskName}" completed`)
+        } else if (newStatus === 'blocked') {
+          toast.error(`⚠ "${taskName}" is blocked`, 8000)
+        } else if (newStatus === 'awaiting_review') {
+          toast.info(`"${taskName}" ready for review`)
+        } else if (newStatus === 'in_progress' || newStatus === 'running') {
+          toast.info(`"${taskName}" now in progress`)
+        }
+      }
+    })
+
+    prevStatusesRef.current = nextStatuses
+
+    // Apply live status overrides on top of initial tasks
+    setLocalTasks(prev =>
+      prev.map(t => ({
+        ...t,
+        status: liveStatusMap[t.id] ?? t.status,
+      }))
+    )
+  }, [realtimeTasks]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Connection is considered live once the initial load is done
+  const isConnected = !realtimeLoading
 
   // ── Dispatch handler ──────────────────────────────────────────────────────
   const handleDispatch = useCallback(async (taskId: string) => {
@@ -98,14 +115,14 @@ export default function LiveTaskBoard({ initialTasks, projectId }: LiveTaskBoard
         return
       }
 
-      const task = tasks.find(t => t.id === taskId)
+      const task = localTasks.find(t => t.id === taskId)
       toast.success(`🚀 "${task?.name}" dispatched`)
     } catch {
       toast.error('Failed to dispatch task')
     } finally {
       setDispatching(prev => ({ ...prev, [taskId]: false }))
     }
-  }, [tasks, toast])
+  }, [localTasks, toast])
 
   // ── Mock agent run ────────────────────────────────────────────────────────
   const handleMockRun = useCallback(async (taskId: string) => {
@@ -175,8 +192,8 @@ export default function LiveTaskBoard({ initialTasks, projectId }: LiveTaskBoard
               size="sm"
               variant="outline"
               onClick={async () => {
-                // Mock-run all pending tasks
-                const pendingTasks = liveTasks.filter(t => ['pending', 'ready', 'in_progress'].includes(t.status))
+                // Mock-run first 3 pending tasks
+                const pendingTasks = localTasks.filter(t => ['pending', 'ready', 'in_progress'].includes(t.status))
                 for (const t of pendingTasks.slice(0, 3)) {
                   await handleMockRun(t.id)
                 }
@@ -191,7 +208,7 @@ export default function LiveTaskBoard({ initialTasks, projectId }: LiveTaskBoard
 
       {/* Task board with enhanced actions */}
       <TaskBoard
-        tasks={liveTasks}
+        tasks={localTasks}
         projectId={projectId}
         onDispatch={handleDispatch}
         onMockRun={isDev ? handleMockRun : undefined}

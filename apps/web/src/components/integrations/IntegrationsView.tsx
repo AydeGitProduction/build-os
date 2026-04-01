@@ -90,8 +90,23 @@ export default function IntegrationsView({
     grouped[p.category].push(p)
   }
 
+  const hasProviders = Object.keys(grouped).length > 0
+
   return (
     <>
+      {!hasProviders && (
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-100 mb-5">
+            <Circle className="h-8 w-8 text-slate-400" />
+          </div>
+          <h3 className="text-base font-semibold text-slate-900 mb-2">No integrations available</h3>
+          <p className="text-sm text-slate-500 max-w-sm">
+            Integration providers are not yet seeded in the database.
+            Run the <code className="bg-slate-100 px-1 rounded text-xs">seed:integrations</code> script or
+            insert rows into the <code className="bg-slate-100 px-1 rounded text-xs">integration_providers</code> table to get started.
+          </p>
+        </div>
+      )}
       <div className="space-y-8">
         {Object.entries(grouped).map(([category, categoryProviders]) => (
           <div key={category}>

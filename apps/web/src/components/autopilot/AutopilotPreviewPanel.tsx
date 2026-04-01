@@ -191,3 +191,4 @@ const TabPanel: React.FC<TabPanelProps> = ({ id, activeTab, children }) => {
     </div>
   );
 };
+export default AutopilotPreviewPanel;

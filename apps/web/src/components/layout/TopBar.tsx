@@ -8,6 +8,7 @@ import type { Project } from '../../types';
 interface TopBarProps {
   project?: Project;
   title?: string;
+  subtitle?: string;
   breadcrumbs?: Array<{ label: string; href?: string }>;
   actions?: React.ReactNode;
 }
@@ -15,6 +16,7 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({
   project,
   title,
+  subtitle,
   breadcrumbs = [],
   actions,
 }) => {
@@ -70,6 +72,13 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           {displayTitle}
         </h1>
+
+        {/* Subtitle */}
+        {subtitle && (
+          <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 ml-1">
+            {subtitle}
+          </span>
+        )}
 
         {/* STATUS BADGE — centralized, shown inline next to title */}
         {hasStatus && (
