@@ -74,7 +74,10 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Step 2: Fire n8n governance webhook (non-fatal) ───────────────────────
+  // G11: Fail loudly if env var is missing — log n8n_misconfigured, surface in response
   const n8nUrl = process.env.N8N_GOVERNANCE_TASK_COMPLETED_URL
+  let n8nMisconfigured = false
+
   if (n8nUrl) {
     fetch(n8nUrl, {
       method: 'POST',
@@ -93,6 +96,26 @@ export async function POST(req: NextRequest) {
     }).catch((err) => {
       console.warn('[trigger/task-completed] n8n webhook failed (non-fatal):', err)
     })
+  } else {
+    // G11 FAIL-LOUDLY: Missing env var must not silently no-op
+    n8nMisconfigured = true
+    console.error('[trigger/task-completed] MISCONFIGURED: N8N_GOVERNANCE_TASK_COMPLETED_URL is not set — governance workflow did not fire')
+    try {
+      await admin.from('task_events').insert({
+        task_id,
+        project_id: project_id ?? null,
+        event_type: 'n8n_misconfigured',
+        actor_type: 'system',
+        actor_id: 'g11-governance-infra',
+        details: {
+          missing_env: 'N8N_GOVERNANCE_TASK_COMPLETED_URL',
+          trigger_route: 'trigger/task-completed',
+          source: 'g11-fail-loudly',
+        },
+      })
+    } catch (logErr) {
+      console.error('[trigger/task-completed] n8n_misconfigured audit log failed:', logErr)
+    }
   }
 
   return NextResponse.json(
@@ -101,6 +124,12 @@ export async function POST(req: NextRequest) {
       event: 'task_completed',
       task_id,
       final_status,
+      ...(n8nMisconfigured
+        ? {
+            n8n_misconfigured: true,
+            n8n_warning: 'N8N_GOVERNANCE_TASK_COMPLETED_URL is not set — governance workflow did not fire. Misconfiguration logged.',
+          }
+        : {}),
     },
     { status: 202 }
   )

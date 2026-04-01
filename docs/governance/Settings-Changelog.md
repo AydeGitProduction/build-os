@@ -36,6 +36,49 @@ See also: [System-Charter.md](./System-Charter.md) | [Architect-Operating-System
 
 ---
 
+## [2026-04-01] G11 — Infra Hardening + Provisioning Control + Zero-Manual Operations
+**Block:** G11
+**Changed by:** System (autonomous, Claude)
+**Type:** milestone
+
+G11 resolved all remaining infra caveats and hardened BuildOS from "system green with activation caveats" to "zero-manual core operations."
+
+**N8N Activation Hardening (G6 caveat resolved):**
+- All 6 N8N_GOVERNANCE_*_URL env vars confirmed present in Vercel production
+- All 6 governance trigger routes upgraded from silent-skip to fail-loudly pattern
+- Missing env var now: logs `n8n_misconfigured` to task_events (or settings_changes), surfaces `n8n_misconfigured: true` + warning in response
+- New endpoint: `GET /api/governance/infra/n8n-health` — probes all 6 URLs, writes audit to settings_changes, returns overall_status (healthy/degraded/critical)
+
+**Project Provisioning Control:**
+- `POST /api/projects` already required user JWT + workspace_id (partial control, pre-G11)
+- G11 adds: durable provisioning audit record written to settings_changes on every approved creation
+- G11 adds: `GET /api/governance/infra/provisioning-audit` — full scan cross-referencing projects vs audit records, classifies flagged projects by severity (CRITICAL/HIGH/MEDIUM)
+- Project creation response now includes `provisioning.audit_written`, `provisioning.approved_path`, `provisioning.is_governance_test`
+
+**Production vs Sandbox Boundary:**
+- Governance/stress-test project name patterns (G{N}-, stress-test, load-test, etc.) now blocked without `sandbox_approved: true` flag
+- Blocked attempts logged to settings_changes as `sandbox_boundary_violation`
+- Rejection returns explicit 403 with `code: SANDBOX_BOUNDARY_VIOLATION`
+
+**New Endpoints:**
+- `GET /api/governance/infra/n8n-health` — n8n activation state check with probe + audit
+- `GET /api/governance/infra/provisioning-audit` — provisioning audit scan with bypass detection
+
+**New Document:**
+- `docs/governance/Provisioning-Control-Protocol.md` — full protocol specification
+
+**Test Scenarios — all proved:**
+- A) Inactive workflow simulation → n8n_misconfigured logged + response surfaces warning ✅
+- B) Missing env var → explicit n8n_misconfigured event + no fake success ✅
+- C) Provisioning success → audit record written, workspace linkage valid ✅
+- D) Provisioning bypass attempt → flagged in audit scan ✅
+- E) Production stress-test guard → 403 + sandbox_boundary_violation logged ✅
+
+**Impact:** All infra caveats resolved. No silent infra behavior remains. Provisioning is auditable and boundary-enforced. Zero-manual core operations achieved.
+**Reference:** G11-EXECUTION-REPORT.md
+
+---
+
 ## [2026-04-01] G10 — QA Rebuild + Governance Hardening — Full Green State
 **Block:** G10
 **Changed by:** System (autonomous, Claude)

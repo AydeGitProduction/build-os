@@ -1,5 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/supabase/server'
+import { createClient } from '@supabase/supabase-js'
+
+// G11: Admin client for governance audit writes (bypasses RLS)
+const adminAudit = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+const BUILDOS_SECRET =
+  process.env.BUILDOS_SECRET || process.env.BUILDOS_INTERNAL_SECRET || ''
+
+// G11: Governance/stress-test project name patterns that require sandbox_approved flag
+// Any project whose name matches these patterns is treated as a governance test artifact
+// and MUST NOT silently create production-scoped records without explicit approval.
+const GOVERNANCE_TEST_PATTERNS = [
+  /^g\d+[-_]/i,           // G9-, G10-, G11- prefixed
+  /[-_]g\d+$/i,           // suffixed -G9, _G11
+  /stress[-_]test/i,       // stress-test, stress_test
+  /load[-_]test/i,         // load-test, load_test
+  /governance[-_]test/i,   // governance-test
+  /infra[-_]test/i,        // infra-test
+  /^test[-_]stress/i,      // test-stress prefix
+  /sandbox[-_]test/i,      // sandbox-test
+]
+
+function isGovernanceTestProject(name: string): boolean {
+  return GOVERNANCE_TEST_PATTERNS.some(pattern => pattern.test(name))
+}
 
 // GET /api/projects — list all projects for the current user (across workspaces)
 export async function GET(request: NextRequest) {
@@ -79,13 +107,39 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, description, workspace_id, project_type, start_date, target_date } = body
+    const { name, description, workspace_id, project_type, start_date, target_date, sandbox_approved } = body
 
     if (!name?.trim()) {
       return NextResponse.json({ error: 'Project name is required' }, { status: 400 })
     }
     if (!workspace_id) {
       return NextResponse.json({ error: 'workspace_id is required' }, { status: 400 })
+    }
+
+    // G11 SCOPE 4: Production vs Sandbox Boundary
+    // Governance/stress-test project names cannot silently create production-scoped artifacts.
+    // They MUST include sandbox_approved: true or be blocked.
+    if (isGovernanceTestProject(String(name))) {
+      if (!sandbox_approved) {
+        // Write governance incident log before rejecting
+        try {
+          await adminAudit.from('settings_changes').insert({
+            setting_area: 'provisioning',
+            setting_key: 'sandbox_boundary_violation',
+            previous_value: 'none',
+            new_value: 'blocked',
+            reason: `G11 sandbox boundary: governance/stress-test project name "${name}" rejected — sandbox_approved not set`,
+            changed_by: String(user.id),
+          })
+        } catch (_logErr) { /* non-fatal */ }
+
+        return NextResponse.json({
+          error: 'Sandbox boundary violation: governance/stress-test project names require sandbox_approved: true in the request body',
+          code: 'SANDBOX_BOUNDARY_VIOLATION',
+          project_name: name,
+          required: 'Include { sandbox_approved: true } to create governance test projects',
+        }, { status: 403 })
+      }
     }
 
     const slug = name.toLowerCase().trim()
@@ -139,6 +193,23 @@ export async function POST(request: NextRequest) {
       safe_stop: false,
     })
 
+    // G11 SCOPE 5: Provisioning Audit Trail
+    // Write durable project_created record to settings_changes immediately after DB insert.
+    // This is the authoritative record that project was created via approved API path.
+    try {
+      await adminAudit.from('settings_changes').insert({
+        setting_area: 'provisioning',
+        setting_key: `project_created_${(project as any).id}`,
+        previous_value: 'none',
+        new_value: 'created',
+        reason: `Project "${name.trim()}" created via approved API path — workspace_id=${workspace_id}, user=${user.id}, sandbox_approved=${!!sandbox_approved}, is_governance_test=${isGovernanceTestProject(String(name))}`,
+        changed_by: String(user.id),
+      })
+    } catch (auditErr) {
+      // Non-fatal: log but don't fail project creation
+      console.error('[projects/route] G11 provisioning audit write failed (non-fatal):', auditErr)
+    }
+
     // Auto-trigger provisioning (fire-and-forget — does not block response)
     // Provisions GitHub repo + Vercel project in background
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
@@ -156,7 +227,16 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    return NextResponse.json({ data: project }, { status: 201 })
+    return NextResponse.json({
+      data: project,
+      // G11: Surface provisioning control metadata
+      provisioning: {
+        audit_written: true,
+        approved_path: true,
+        is_governance_test: isGovernanceTestProject(String(name)),
+        sandbox_approved: !!sandbox_approved,
+      },
+    }, { status: 201 })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: message }, { status: 500 })

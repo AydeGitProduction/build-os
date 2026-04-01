@@ -172,7 +172,10 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Fire n8n webhook (non-fatal) ──────────────────────────────────────────
+  // G11: Fail loudly if env var is missing — log n8n_misconfigured, surface in response
   const n8nUrl = process.env.N8N_GOVERNANCE_RELEASE_GATE_URL
+  let n8nMisconfigured = false
+
   if (n8nUrl) {
     fetch(n8nUrl, {
       method: 'POST',
@@ -181,6 +184,22 @@ export async function POST(req: NextRequest) {
     }).catch((err) =>
       console.warn('[trigger/release-gate] n8n webhook failed (non-fatal):', err)
     )
+  } else {
+    // G11 FAIL-LOUDLY: Missing env var must not silently no-op
+    n8nMisconfigured = true
+    console.error('[trigger/release-gate] MISCONFIGURED: N8N_GOVERNANCE_RELEASE_GATE_URL is not set — governance workflow did not fire')
+    try {
+      await admin.from('settings_changes').insert({
+        setting_area: 'n8n_governance',
+        setting_key: 'n8n_misconfigured_release_gate',
+        previous_value: 'configured',
+        new_value: 'missing',
+        reason: `G11 fail-loudly: N8N_GOVERNANCE_RELEASE_GATE_URL missing — gate ${gate_name} governance workflow did not fire (gate_status=${gate_status})`,
+        changed_by: 'g11-governance-infra',
+      })
+    } catch (logErr) {
+      console.error('[trigger/release-gate] n8n_misconfigured audit log failed:', logErr)
+    }
   }
 
   return NextResponse.json({
@@ -192,5 +211,11 @@ export async function POST(req: NextRequest) {
     evidence_summary,
     checks,
     gate_check_id: gateCheckId,
+    ...(n8nMisconfigured
+      ? {
+          n8n_misconfigured: true,
+          n8n_warning: 'N8N_GOVERNANCE_RELEASE_GATE_URL is not set — governance workflow did not fire. Misconfiguration logged.',
+        }
+      : {}),
   })
 }

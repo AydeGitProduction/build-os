@@ -139,7 +139,10 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Step 3: Fire n8n webhook (non-fatal) ──────────────────────────────────
+  // G11: Fail loudly if env var is missing — log n8n_misconfigured, surface in response
   const n8nUrl = process.env.N8N_GOVERNANCE_COMMIT_FAILURE_URL
+  let n8nMisconfigured = false
+
   if (n8nUrl) {
     fetch(n8nUrl, {
       method: 'POST',
@@ -148,10 +151,43 @@ export async function POST(req: NextRequest) {
     }).catch((err) =>
       console.warn('[trigger/commit-failure] n8n webhook failed (non-fatal):', err)
     )
+  } else {
+    // G11 FAIL-LOUDLY: Missing env var must not silently no-op
+    n8nMisconfigured = true
+    console.error('[trigger/commit-failure] MISCONFIGURED: N8N_GOVERNANCE_COMMIT_FAILURE_URL is not set — governance workflow did not fire')
+    try {
+      await admin.from('task_events').insert({
+        task_id,
+        project_id: project_id ?? null,
+        event_type: 'n8n_misconfigured',
+        actor_type: 'system',
+        actor_id: 'g11-governance-infra',
+        details: {
+          missing_env: 'N8N_GOVERNANCE_COMMIT_FAILURE_URL',
+          trigger_route: 'trigger/commit-failure',
+          source: 'g11-fail-loudly',
+        },
+      })
+    } catch (logErr) {
+      console.error('[trigger/commit-failure] n8n_misconfigured audit log failed:', logErr)
+    }
   }
 
   return NextResponse.json(
-    { ok: true, event: 'commit_failure', task_id, escalated, fail_count: failCount, incident_id: incidentId },
+    {
+      ok: true,
+      event: 'commit_failure',
+      task_id,
+      escalated,
+      fail_count: failCount,
+      incident_id: incidentId,
+      ...(n8nMisconfigured
+        ? {
+            n8n_misconfigured: true,
+            n8n_warning: 'N8N_GOVERNANCE_COMMIT_FAILURE_URL is not set — governance workflow did not fire. Misconfiguration logged.',
+          }
+        : {}),
+    },
     { status: 202 }
   )
 }

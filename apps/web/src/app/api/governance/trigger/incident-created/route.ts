@@ -90,7 +90,10 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Step 3: Fire n8n governance webhook (non-fatal) ───────────────────────
+  // G11: Fail loudly if env var is missing — log n8n_misconfigured, surface in response
   const n8nUrl = process.env.N8N_GOVERNANCE_INCIDENT_CREATED_URL
+  let n8nMisconfigured = false
+
   if (n8nUrl) {
     fetch(n8nUrl, {
       method: 'POST',
@@ -109,6 +112,22 @@ export async function POST(req: NextRequest) {
     }).catch((err) => {
       console.warn('[trigger/incident-created] n8n webhook failed (non-fatal):', err)
     })
+  } else {
+    // G11 FAIL-LOUDLY: Missing env var must not silently no-op
+    n8nMisconfigured = true
+    console.error('[trigger/incident-created] MISCONFIGURED: N8N_GOVERNANCE_INCIDENT_CREATED_URL is not set — governance workflow did not fire')
+    try {
+      await admin.from('settings_changes').insert({
+        setting_area: 'n8n_governance',
+        setting_key: 'n8n_misconfigured_incident_created',
+        previous_value: 'configured',
+        new_value: 'missing',
+        reason: `G11 fail-loudly: N8N_GOVERNANCE_INCIDENT_CREATED_URL missing — incident ${incident_code ?? incident_id} governance workflow did not fire`,
+        changed_by: 'g11-governance-infra',
+      })
+    } catch (logErr) {
+      console.error('[trigger/incident-created] n8n_misconfigured audit log failed:', logErr)
+    }
   }
 
   return NextResponse.json(
@@ -117,6 +136,12 @@ export async function POST(req: NextRequest) {
       event: 'incident_created',
       incident_id,
       severity,
+      ...(n8nMisconfigured
+        ? {
+            n8n_misconfigured: true,
+            n8n_warning: 'N8N_GOVERNANCE_INCIDENT_CREATED_URL is not set — governance workflow did not fire. Misconfiguration logged.',
+          }
+        : {}),
     },
     { status: 202 }
   )
