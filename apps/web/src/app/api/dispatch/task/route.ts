@@ -414,6 +414,40 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // ── G5 AUTO-HOOK: governance task_events + handoff_events (dispatch) ──────
+    // Non-fatal: governance logging failure must never block dispatch
+    try {
+      await admin.from('task_events').insert({
+        task_id: task.id,
+        project_id: task.project_id ?? null,
+        event_type: 'dispatched',
+        actor_type: 'system',
+        actor_id: actorUserId || 'orchestrator',
+        details: {
+          task_run_id: taskRunId,
+          dispatch_method: dispatchMethod,
+          webhook_ok: webhookOk,
+          routing_model: routingDecision.model,
+          routing_rule: routingDecision.rule_name,
+          routing_fallback: routingDecision.fallback_used,
+        },
+      })
+    } catch (govErr) {
+      console.warn('[dispatch/task] G5 governance task_events insert failed (non-fatal):', govErr)
+    }
+
+    try {
+      await admin.from('handoff_events').insert({
+        task_id: task.id,
+        from_role: 'orchestrator',
+        to_role: task.agent_role || 'agent',
+        handoff_type: 'dispatch',
+        notes: `Dispatched via ${dispatchMethod}; model=${routingDecision.model}; rule=${routingDecision.rule_name}`,
+      })
+    } catch (govErr) {
+      console.warn('[dispatch/task] G5 governance handoff_events insert failed (non-fatal):', govErr)
+    }
+
     const result = {
       task_id:          task.id,
       task_run_id:      taskRunId,

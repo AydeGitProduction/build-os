@@ -197,6 +197,30 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // ── G5 AUTO-HOOK: governance task_events (QA verdict) ────────────────────
+    // Non-fatal: governance logging failure must never block the verdict response
+    try {
+      const govEventType = passed ? 'qa_verdict_pass' : 'qa_verdict_fail'
+      await admin.from('task_events').insert({
+        task_id,
+        project_id: task.project_id ?? null,
+        event_type: govEventType,
+        actor_type: 'agent',
+        actor_id: agent_role || 'qa_security_auditor',
+        details: {
+          verdict: verdictNorm,
+          score: score ?? null,
+          old_status: oldStatus,
+          new_status: newStatus,
+          qa_verdict_id: qaVerdict.id,
+          issues: issues || [],
+          internal_call: isInternalCall,
+        },
+      })
+    } catch (govErr) {
+      console.warn('[qa/verdict] G5 governance task_events insert failed (non-fatal):', govErr)
+    }
+
     const result = {
       qa_verdict_id: qaVerdict.id,
       task_id,

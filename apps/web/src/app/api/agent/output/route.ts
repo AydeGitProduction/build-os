@@ -394,6 +394,29 @@ export async function POST(request: NextRequest) {
       },
     })
 
+    // ── G5 AUTO-HOOK: governance task_events (status transition) ─────────────
+    // Non-fatal: governance logging failure must never block the output response
+    try {
+      await admin.from('task_events').insert({
+        task_id,
+        project_id: task.project_id ?? null,
+        event_type: 'status_transition',
+        actor_type: 'agent',
+        actor_id: agent_role || task.agent_role || null,
+        details: {
+          old_status: oldStatus,
+          new_status: effectiveNewStatus,
+          success,
+          task_run_id,
+          shadow_race_recovery: isShadowRaceRecovery,
+          output_type: output_type || null,
+          model_id: model_id || null,
+        },
+      })
+    } catch (govErr) {
+      console.warn('[agent/output] G5 governance task_events insert failed (non-fatal):', govErr)
+    }
+
     const result = {
       task_id,
       task_run_id,
