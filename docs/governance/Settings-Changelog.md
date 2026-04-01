@@ -36,6 +36,43 @@ See also: [System-Charter.md](./System-Charter.md) | [Architect-Operating-System
 
 ---
 
+## [2026-04-01] G8 — Governance v1 FROZEN — System Hardening + Full E2E Validation Complete
+**Block:** G8
+**Changed by:** System (autonomous, Claude)
+**Type:** governance-lock
+
+BuildOS Governance v1 is now formally frozen. G8 completed the following:
+
+**G6 Pending Items Activated:**
+- All 6 n8n workflow JSONs confirmed in `n8n/` directory (manual activation required in n8n dashboard)
+- All 6 `N8N_GOVERNANCE_*_URL` env vars set in Vercel production
+- G4→G6 auto-trigger integration added: stub gate failures in `dispatch/task` now auto-fire `trigger/commit-failure` without any manual step
+
+**RULE-25 Created:**
+- Rule code: RULE-25
+- Title: G4 Stub Gate Failures Must Auto-Escalate to G6 Commit-Failure Trigger
+- Enforcement type: code
+- Source incident: INC-0003
+
+**INC-0003 Closed:**
+- P1 incident (commit auto-escalation) closed with RULE-25 linked
+- `related_rule_id` = 2907a652-e231-47e1-874b-85b373522bd9
+
+**Full E2E System Loop — PASSED (11/11 steps):**
+- Steps 1–8: project create → wizard → tasks → dispatch → QA → commit → failure simulation → auto-escalation
+- Step 9: Fix applied (RULE-25 + INC-0003 closed)
+- Step 10: Retry execution confirmed successful
+- Step 11: Release gate — **PASSED** (0 P0, 0 P1, 3 commit failures < 5 threshold; gate_check_id: 06d88cd3)
+
+**Governance Package Created:**
+- `docs/governance/CANONICAL-GOVERNANCE-v1.md` — single canonical reference for Governance v1
+- `docs/governance/ARCHITECT-BOOTSTRAP-PROMPT.md` — onboarding for new AI agents
+
+**Impact:** BuildOS Governance v1 is locked. All future governance changes must follow the process: incident → prevention rule → changelog entry → governance block (G9+) → commit → deploy. No informal changes permitted.
+**Reference:** G8-EXECUTION-REPORT.md, RULE-25 (id: 2907a652), gate_check_id: 06d88cd3
+
+---
+
 ## [2026-04-01] G7 Constitutional Governance Lock — Governance Package v1 Created
 **Block:** G7
 **Changed by:** System (autonomous, Claude)
