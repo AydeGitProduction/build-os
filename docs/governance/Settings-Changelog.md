@@ -36,6 +36,47 @@ See also: [System-Charter.md](./System-Charter.md) | [Architect-Operating-System
 
 ---
 
+## [2026-04-01] G10 — QA Rebuild + Governance Hardening — Full Green State
+**Block:** G10
+**Changed by:** System (autonomous, Claude)
+**Type:** milestone
+
+G10 resolved all critical and high issues from GA1 audit.
+
+**QA Rebuild (CRITICAL — WEAKNESS-01 fixed):**
+- `lib/qa-evaluator.ts` replaced with `buildos-qa-evaluator-v2` (fail-by-default)
+- Multi-layer checks: `compilation_passed`, `contract_check_passed`, `schema_check_passed` (RULE-27), `requirement_match_passed`
+- Verdict rule: ANY false → FAIL. ALL true → PASS. No auto-pass path.
+- Added `KNOWN_BUILDOS_TABLES` set for schema validation — unknown DB table references in output → FAIL
+- Fixed bug: `incident_type: 'qa'` → `'workflow'` in escalation path
+
+**Release Gate Fix (HIGH — WEAKNESS-02/RULE-29 fixed):**
+- `trigger/release-gate/route.ts` check_c now scoped by `project_id` when provided
+- Global commit failure count no longer blocks project-scoped gate
+
+**New Endpoint:**
+- `POST /api/governance/qa-override` — force PASS/FAIL with mandatory reason, writes to `qa_results` + `manual_override_log` (NC-05)
+
+**Test Scenarios — all proved:**
+- A) Broken code (SyntaxError) → QA FAIL ✅
+- B) Unknown DB table reference → QA FAIL ✅ (schema_check_passed=false)
+- C) Valid code → QA PASS ✅
+- D) Release gate with project_id scoped → PASS (gate_check_id: 56e01d92) ✅
+- E) Manual FAIL override → task blocked (override_log_id: ed1e0370) ✅
+
+**Data consistency fixes:**
+- settings_changes: 10 → 11 rows (G10 milestone added, id: a46a671e)
+- Incidents: INC-0002, INC-0004–0007 closed with RULE-30
+- RULE-30 created: G10 QA rebuild resolves rubber-stamp era escalations
+
+**Commit:** 1ed985aa — 3 files changed
+**Prevention rules:** 29 → 30 total
+
+**Impact:** QA is now a real gate. No fake green states. All incidents closed (9 total). Settings changes aligned (11).
+**Reference:** G10-EXECUTION-REPORT.md, commit 1ed985aa, gate_check_id 56e01d92
+
+---
+
 ## [2026-04-01] G9 — Real Project Stress Test — 6 Weaknesses Found, 4 Prevention Rules Added
 **Block:** G9
 **Changed by:** System (autonomous, Claude)
