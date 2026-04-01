@@ -1,0 +1,131 @@
+/* src/components/PhaseHeaderBar/PhaseHeaderBar.module.css */
+
+/* ─── Root container ─────────────────────────────────────────────────────── */
+.phaseHeaderBar {
+  /* Fixed slim height */
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+
+  /* Layout */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+
+  /* Appearance */
+  background-color: #ffffff;
+  border-bottom: 1px solid #e5e7eb; /* gray-200 */
+
+  /* Ensure it never shrinks in flex containers */
+  flex-shrink: 0;
+
+  /* Typography baseline */
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: #111827; /* gray-900 */
+
+  /* Layer above message list */
+  position: relative;
+  z-index: 1;
+
+  /* Subtle transition for phase name swap */
+  transition: background-color 150ms ease;
+}
+
+/* ─── Phase icon ─────────────────────────────────────────────────────────── */
+.phaseIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.phaseIconWizard {
+  color: #7c3aed; /* violet-600 — wizard accent */
+}
+
+.phaseIconPhase {
+  color: #2563eb; /* blue-600 — phase accent */
+}
+
+/* ─── Phase name ─────────────────────────────────────────────────────────── */
+.phaseName {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+  flex-shrink: 1;
+
+  /* Smooth text swap */
+  transition: color 150ms ease;
+}
+
+/* ─── Status badge (margin handled by gap, but explicit left offset) ─────── */
+.statusBadge {
+  flex-shrink: 0;
+}
+
+/* ─── Spacer ─────────────────────────────────────────────────────────────── */
+.spacer {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+/* ─── Switch phase link ──────────────────────────────────────────────────── */
+.switchLink {
+  /* Reset button styles */
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 3px 6px;
+  margin: 0;
+  cursor: pointer;
+
+  /* Layout */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+
+  /* Typography */
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #6b7280; /* gray-500 */
+  white-space: nowrap;
+  line-height: 1;
+
+  /* Shape */
+  border-radius: 4px;
+
+  /* Transitions */
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.switchLink:hover {
+  color: #2563eb; /* blue-600 */
+  background-color: #eff6ff; /* blue-50 */
+}
+
+.switchLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.switchLink:active {
+  background-color: #dbeafe; /* blue-100 */
+}
+
+.switchLinkIcon {
+  margin-top: 1px; /* optical alignment */
+  transition: transform 120ms ease;
+}
+
+.switchLink:hover .switchLinkIcon {
+  transform: translateY(1px);
+}

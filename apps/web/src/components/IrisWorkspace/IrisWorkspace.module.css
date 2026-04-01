@@ -1,0 +1,23 @@
+/* src/components/IrisWorkspace/IrisWorkspace.module.css */
+/* Add / update these rules */
+
+.chatPanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* PhaseHeaderBar is flex-shrink:0 internally, but ensure the panel honours it */
+/* The component itself is 40px — no extra rules needed here unless overriding */
+
+.messageList {
+  flex: 1 1 0%;
+  overflow-y: auto;
+  /* Remove any top padding that compensated for the old heading */
+  padding: 12px 16px 0;
+}
+
+/* ── Remove the old "Tell IRIS" heading styles ─────────────────────────────── */
+/* .tellIrisHeading { ... }  ← DELETE this rule entirely */
