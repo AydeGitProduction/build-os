@@ -33,36 +33,44 @@ export async function GET(request: NextRequest) {
 
     const raw = await getOrchestrationStatus(admin, projectId)
 
-    // Fetch active agent roles from tasks currently in_progress or dispatched
-    const { data: activeTasks } = await admin
+    // Fetch live task counts directly from DB (more accurate than lib summary)
+    const { data: taskRows } = await admin
       .from('tasks')
-      .select('agent_role')
+      .select('status, agent_role')
       .eq('project_id', projectId)
-      .in('status', ['dispatched', 'in_progress'])
 
-    const activeAgents = (activeTasks ?? [])
-      .map((t: { agent_role: string | null }) => t.agent_role ?? 'unknown')
+    type TaskRow = { status: string; agent_role: string | null }
+    const rows: TaskRow[] = taskRows ?? []
+
+    const countByStatus = (s: string) => rows.filter(r => r.status === s).length
+    const pendingCount    = countByStatus('pending')
+    const readyCount      = countByStatus('ready')
+    const dispatchedCount = countByStatus('dispatched')
+    const inProgressCount = countByStatus('in_progress')
+    const completedCount  = countByStatus('completed')
+    const blockedCount    = countByStatus('blocked')
+    const failedCount     = countByStatus('failed')
+    const activeCount     = dispatchedCount + inProgressCount
+
+    const activeAgents = rows
+      .filter(r => r.status === 'dispatched' || r.status === 'in_progress')
+      .map(r => r.agent_role ?? 'unknown')
       .filter(Boolean)
 
-    const activeCount  = (raw as { active_count?: number }).active_count   ?? 0
-    const readyCount   = (raw as { ready_count?: number }).ready_count     ?? 0
-    const pendingCount = (raw as { pending_count?: number }).pending_count ?? 0
-    const completedCount = (raw as { completed_count?: number }).completed_count ?? 0
-    const failedCount  = (raw as { failed_count?: number }).failed_count   ?? 0
-    const blockedCount = (raw as { blocked_count?: number }).blocked_count ?? 0
-    const loopHealthy  = (raw as { loop_healthy?: boolean }).loop_healthy  ?? true
-    const safeStopped  = (raw as { config?: { safe_stop?: boolean } }).config?.safe_stop ?? false
-    const lastTick     = (raw as { last_tick_at?: string | null }).last_tick_at ?? null
+    const loopHealthy = (raw as { loop_healthy?: boolean }).loop_healthy ?? true
+    const safeStopped = (raw as { config?: { safe_stop?: boolean } }).config?.safe_stop ?? false
+    const lastTick    = (raw as { last_tick_at?: string | null }).last_tick_at ?? null
 
     // Derive phase from system state
     const phase =
-      safeStopped              ? 'paused'
-      : activeCount > 0        ? 'executing'
-      : readyCount > 0         ? 'planning'
-      : completedCount > 0 && pendingCount === 0 && readyCount === 0 ? 'complete'
+      safeStopped                                                         ? 'paused'
+      : activeCount > 0                                                   ? 'executing'
+      : readyCount > 0                                                    ? 'planning'
+      : completedCount > 0 && pendingCount === 0 && readyCount === 0     ? 'complete'
       : 'idle'
 
-    // Map to shape expected by useOrchestration (hooks/useOrchestration.ts)
+    // Return flat shape expected by useOrchestration hook (hooks/useOrchestration.ts)
+    // NOTE: do NOT wrap in { data: ... } — apiGet already stores full JSON as result.data
     const mapped = {
       project_id:    projectId,
       phase,
@@ -70,12 +78,12 @@ export async function GET(request: NextRequest) {
       task_counts: {
         pending:     pendingCount,
         ready:       readyCount,
-        dispatched:  activeCount,
-        in_progress: activeCount,
+        dispatched:  dispatchedCount,
+        in_progress: inProgressCount,
         completed:   completedCount,
         blocked:     blockedCount,
         failed:      failedCount,
-        total:       pendingCount + readyCount + activeCount + completedCount + blockedCount + failedCount,
+        total:       rows.length,
       },
       health_status: loopHealthy ? 'healthy' : 'degraded',
       last_tick:     lastTick,
@@ -83,7 +91,7 @@ export async function GET(request: NextRequest) {
       run_active:    activeCount > 0 && !safeStopped,
     }
 
-    return NextResponse.json({ data: mapped })
+    return NextResponse.json(mapped)
   } catch (err: unknown) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Internal server error' },
