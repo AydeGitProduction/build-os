@@ -36,6 +36,22 @@ See also: [System-Charter.md](./System-Charter.md) | [Architect-Operating-System
 
 ---
 
+## [2026-04-01] G9 — Real Project Stress Test — 6 Weaknesses Found, 4 Prevention Rules Added
+**Block:** G9
+**Changed by:** System (autonomous, Claude)
+**Type:** incident-lesson
+
+G9 stress test executed against Mini CRM Contact Management Module (14 tasks, 4 failure scenarios). Key findings: WEAKNESS-01 (CRITICAL) auto-QA blindly passes all tasks 100/100 regardless of bugs; WEAKNESS-02 (HIGH) release gate commit failure count is global not per-project. System handled escalation (INC-0008 P2, INC-0009 P1), gate blocking, and incident-to-rule lifecycle correctly.
+
+**Rules added:** RULE-26 (schema dependency completeness), RULE-27 (auto-QA schema validation), RULE-28 (contract-first integration design), RULE-29 (release gate per-project scope).
+
+**Verdict:** NEEDS HARDENING — G10 must fix WEAKNESS-01 and WEAKNESS-02.
+
+**Impact:** G10 work queue: 5 priority improvements. Prevention rules: 25 → 29.
+**Reference:** G9-EXECUTION-REPORT.md, INC-0008, INC-0009
+
+---
+
 ## [2026-04-01] G8 — Governance v1 FROZEN — System Hardening + Full E2E Validation Complete
 **Block:** G8
 **Changed by:** System (autonomous, Claude)
