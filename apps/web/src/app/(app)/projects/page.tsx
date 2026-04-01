@@ -11,40 +11,31 @@ export const metadata: Metadata = { title: 'Projects' }
 
 export default async function ProjectsPage() {
   const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
+
+  // Auth check
+  let user = null
+  try {
+    const { data } = await supabase.auth.getUser()
+    user = data?.user ?? null
+  } catch {
+    // Auth call failed — supabase might be misconfigured
+  }
   if (!user) redirect('/login')
 
-  // Fetch projects with summary stats
-  let rawProjects: any[] | null = null
+  // Fetch projects — simple query, no nested relations that may lack FK definitions
+  let projects: any[] = []
   try {
     const { data, error } = await supabase
       .from('projects')
-      .select(`
-        id, name, slug, description, status, project_type,
-        target_date, updated_at,
-        workspace:workspaces(id, name, slug),
-        epics(id, status),
-        tasks(id, status)
-      `)
+      .select('id, name, slug, description, status, project_type, target_date, updated_at')
       .order('updated_at', { ascending: false })
-    if (!error) rawProjects = data
-  } catch (e) {
-    console.error('[ProjectsPage] Failed to fetch projects:', e)
-    // error.tsx boundary will catch server throws; allow empty state fallback
-  }
-
-  // Compute stats
-  const projects = (rawProjects || []).map((p: any) => {
-    const tasks = p.tasks || []
-    const completedTasks = tasks.filter((t: any) => t.status === 'completed').length
-    return {
-      ...p,
-      epic_count: (p.epics || []).length,
-      task_count: tasks.length,
-      completed_task_count: completedTasks,
-      progress_pct: tasks.length > 0 ? Math.round((completedTasks / tasks.length) * 100) : 0,
+    if (!error && data) {
+      projects = data
     }
-  })
+  } catch (e) {
+    console.error('[ProjectsPage] Supabase query failed:', e)
+    // Render empty state rather than crash
+  }
 
   return (
     <>
