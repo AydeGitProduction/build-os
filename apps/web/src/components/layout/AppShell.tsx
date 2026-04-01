@@ -2,10 +2,11 @@
 /**
  * AppShell — client wrapper that conditionally renders the Sidebar.
  * On /projects/[id]/autopilot routes: full-screen, no sidebar, no margin.
- * On all other routes: standard layout with Sidebar + marginLeft.
+ * On all other routes: standard layout with Sidebar + flex layout.
  *
- * Also extracts projectId from the pathname so Sidebar can show
- * the "Autopilot Mode" link and project-scoped nav.
+ * FIX (layout-shift): Removed `marginLeft: var(--sidebar-width)` from <main>.
+ * The flex container already positions <main> to the right of <Sidebar>.
+ * Adding marginLeft on top of flex positioning caused a 240px content shift.
  */
 
 import { usePathname } from 'next/navigation'
@@ -36,14 +37,11 @@ export default function AppShell({ children }: AppShellProps) {
     )
   }
 
-  // Standard layout
+  // Standard layout — flex handles the sidebar + content positioning naturally
   return (
     <div className="flex h-full">
       <Sidebar projectId={projectId} />
-      <main
-        className="flex-1 flex flex-col min-h-full overflow-y-auto"
-        style={{ marginLeft: 'var(--sidebar-width)' }}
-      >
+      <main className="flex-1 flex flex-col min-h-full overflow-y-auto">
         {children}
       </main>
     </div>

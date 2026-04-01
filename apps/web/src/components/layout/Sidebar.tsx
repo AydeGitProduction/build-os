@@ -12,6 +12,11 @@ import {
   Bot,
   FolderKanban,
   ListTodo,
+  Zap,
+  Users,
+  Cpu,
+  Eye,
+  Puzzle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -29,8 +34,13 @@ const TOP_NAV: NavItem[] = [
 function getProjectNav(projectId: string): NavItem[] {
   const base = `/projects/${projectId}`
   return [
-    { label: 'Overview', href: base, icon: <FolderKanban className="h-4 w-4" /> },
-    { label: 'Tasks', href: `${base}/tasks`, icon: <ListTodo className="h-4 w-4" /> },
+    { label: 'Overview',     href: base,                   icon: <FolderKanban className="h-4 w-4" /> },
+    { label: 'Tasks',        href: `${base}/tasks`,        icon: <ListTodo className="h-4 w-4" /> },
+    { label: 'Orchestrate',  href: `${base}/orchestrate`,  icon: <Zap className="h-4 w-4" /> },
+    { label: 'Agents',       href: `${base}/agents`,       icon: <Users className="h-4 w-4" /> },
+    { label: 'System',       href: `${base}/system`,       icon: <Cpu className="h-4 w-4" /> },
+    { label: 'Preview',      href: `${base}/preview`,      icon: <Eye className="h-4 w-4" /> },
+    { label: 'Integrations', href: `${base}/integrations`, icon: <Puzzle className="h-4 w-4" /> },
   ]
 }
 
@@ -94,8 +104,11 @@ export default function Sidebar() {
           <span className="flex-1 truncate text-left">{currentWs}</span>
           <ChevronDown className={cn('h-3.5 w-3.5 text-slate-500 transition-transform', wsOpen && 'rotate-180')} />
         </button>
-        {wsOpen && workspaces.length > 1 && (
+        {wsOpen && (
           <div className="absolute left-3 right-3 top-full mt-1 z-50 rounded-md border border-white/10 bg-navy-900 shadow-lg overflow-hidden">
+            {workspaces.length === 0 && (
+              <div className="px-3 py-2.5 text-xs text-slate-500">No workspaces found</div>
+            )}
             {workspaces.map(ws => (
               <button
                 key={ws.id}
@@ -106,6 +119,9 @@ export default function Sidebar() {
                   {ws.name.charAt(0).toUpperCase()}
                 </div>
                 <span className="truncate">{ws.name}</span>
+                {ws.name === currentWs && (
+                  <span className="ml-auto text-xs text-brand-400">✓</span>
+                )}
               </button>
             ))}
           </div>
@@ -150,7 +166,12 @@ export default function Sidebar() {
             {projectNavOpen && (
               <div className="mt-1 space-y-0.5">
                 {projectNav.map(item => {
-                  const active = pathname === item.href
+                  // Overview: exact match only (avoid highlighting when on /tasks, /agents, etc.)
+                  // All others: match self and sub-routes
+                  const isOverview = projectId ? item.href === `/projects/${projectId}` : false
+                  const active = isOverview
+                    ? pathname === item.href
+                    : pathname === item.href || pathname.startsWith(item.href + '/')
                   return (
                     <Link
                       key={item.href}
