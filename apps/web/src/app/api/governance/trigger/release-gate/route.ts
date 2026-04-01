@@ -97,22 +97,37 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Check C: Commit failure rate in last 7 days ────────────────────────────
+  // ── Check C: Commit failure rate in last 7 days (G10 FIX: scoped by project_id) ──
+  // RULE-29: Release gate commit failure check must be scoped to project_id.
+  // Prior: global count across ALL projects — external test failures blocked gates.
+  // Fixed: filter by project_id when provided, so only current project failures count.
   try {
     const cutoff7d = new Date(
       Date.now() - COMMIT_FAIL_WINDOW_DAYS * 24 * 60 * 60 * 1000
     ).toISOString()
 
-    const { data: commitFailEvents } = await admin
+    let commitFailQuery = admin
       .from('task_events')
-      .select('id, created_at')
+      .select('id, created_at, project_id')
       .eq('event_type', 'commit_failure')
       .gte('created_at', cutoff7d)
 
+    // G10 FIX (RULE-29): scope to project_id when provided
+    const scopedToProject = !!project_id
+    if (scopedToProject) {
+      commitFailQuery = commitFailQuery.eq('project_id', project_id as string)
+    }
+
+    const { data: commitFailEvents } = await commitFailQuery
+
     const commitFailCount = commitFailEvents?.length ?? 0
+    const scopeLabel = scopedToProject
+      ? `project ${String(project_id).slice(0, 8)}…`
+      : 'GLOBAL (no project_id provided — RULE-29 warning)'
+
     checks['check_c_commit_failure_rate'] = {
       passed: commitFailCount < COMMIT_FAIL_RELEASE_THRESHOLD,
-      detail: `Commit failures (${COMMIT_FAIL_WINDOW_DAYS}d): ${commitFailCount} (threshold: ${COMMIT_FAIL_RELEASE_THRESHOLD})`,
+      detail: `Commit failures (${COMMIT_FAIL_WINDOW_DAYS}d, scope=${scopeLabel}): ${commitFailCount} (threshold: ${COMMIT_FAIL_RELEASE_THRESHOLD})`,
       count: commitFailCount,
     }
   } catch (err) {
