@@ -504,6 +504,14 @@ export async function POST(
 
   // ── 4. Insert Tasks ───────────────────────────────────────────────────────
 
+  // Generate a unique slug for each task
+  const toSlug = (title: string, idx: number) =>
+    title.toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 60)
+      .replace(/-+$/, '') + `-${idx + 1}`
+
   const taskInserts = tasks.map((t, idx) => ({
     project_id:   projectId,
     feature_id:   featureMap[t.feature_slug],
@@ -516,6 +524,7 @@ export async function POST(
     order_index:  idx + 1,
     max_retries:  2,
     delivery_type: 'code',
+    slug:         toSlug(t.title, idx),
   }))
 
   const { data: insertedTasks, error: taskErr } = await admin
