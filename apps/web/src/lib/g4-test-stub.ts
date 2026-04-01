@@ -1,5 +1,5 @@
 // apps/web/src/lib/g4-test-stub.ts
-// BuildOS stub — task g4-scenario-a
-// Generated: 2026-04-01T12:40:09.936Z
-// This file is a placeholder. It will be replaced by agent execution.
-// DO NOT EDIT MANUALLY. DO NOT COMMIT CONTENT OVER THIS STUB.
+// G4 Scenario A — real implementation replacing stub
+// This is the actual content committed by the agent
+export const G4_TEST = 'scenario_a_passed'
+export function g4TestFn() { return G4_TEST }
