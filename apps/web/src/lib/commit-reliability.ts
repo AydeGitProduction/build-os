@@ -1,43 +1,70 @@
 // apps/web/src/lib/commit-reliability.ts
+// Commit reliability layer: verification, delivery logging, stub creation, incident escalation.
+// DO NOT MODIFY: uses @octokit/rest (added to package.json) and correct import paths.
 
-import { Octokit } from '@octokit/rest';
-import { resolveGitHubToken } from './github-token-resolver';
+import { Octokit } from '@octokit/rest'
+import { resolveGitHubToken } from '@/lib/resolve-github-token'
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface CommitFileOptions {
-  adminId: string;
-  projectId: string;
-  owner: string;
-  repo: string;
-  branch: string;
-  filePath: string;
-  content: string; // base64 encoded content
-  commitMessage: string;
-  committerName?: string;
-  committerEmail?: string;
+  projectId: string
+  owner: string
+  repo: string
+  branch: string
+  filePath: string
+  content: string // base64 encoded content
+  commitMessage: string
+  committerName?: string
+  committerEmail?: string
 }
 
 export interface CommitResult {
-  sha: string;
-  url: string;
-  tokenMode: 'user_managed' | 'platform_managed';
+  sha: string
+  url: string
+  tokenMode: 'user_managed' | 'platform_managed'
 }
 
 export interface EnsureFileOptions extends CommitFileOptions {
-  /** Maximum number of retry attempts on conflict (409) */
-  maxRetries?: number;
+  maxRetries?: number
 }
 
-/**
- * Commits a single file to a GitHub repository with reliability guarantees.
- *
- * Uses the ownership resolver to select the appropriate GitHub token.
- * Handles SHA conflicts by fetching the latest file SHA before committing.
- */
+export interface DeliveryLogOptions {
+  task_id: string
+  project_id: string
+  repo_name: string
+  branch_name: string
+  target_path: string
+  stub_created: boolean
+  token_refreshed: boolean
+  commit_sha: string | null
+  commit_verified: boolean
+  verification_notes?: string
+}
+
+export interface StubResult {
+  success: boolean
+  commitSha?: string
+  tokenRefreshed: boolean
+  error?: string
+}
+
+export interface VerifyResult {
+  verified: boolean
+  notes: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core commit with retry
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function commitFileReliably(
-  options: EnsureFileOptions
+  options: EnsureFileOptions,
 ): Promise<CommitResult> {
   const {
-    adminId,
     projectId,
     owner,
     repo,
@@ -45,50 +72,23 @@ export async function commitFileReliably(
     filePath,
     content,
     commitMessage,
-    committerName = 'Terrarium Bot',
-    committerEmail = 'bot@terrarium.dev',
+    committerName = 'Build OS Bot',
+    committerEmail = 'bot@buildos.dev',
     maxRetries = 3,
-  } = options;
+  } = options
 
-  console.log(
-    `[commit-reliability] Starting reliable commit — ` +
-      `projectId=${projectId} adminId=${adminId} ` +
-      `${owner}/${repo}@${branch}:${filePath}`
-  );
+  const { token, mode: tokenMode } = await resolveGitHubToken(projectId)
 
-  // ── Resolve token via ownership resolver ──────────────────────────────────
-  const { token, mode: tokenMode, source: tokenSource } =
-    await resolveGitHubToken(adminId, projectId);
+  if (!token) {
+    throw new Error(`[commit-reliability] No GitHub token for project=${projectId}`)
+  }
 
-  console.log(
-    `[commit-reliability] Token resolved — mode="${tokenMode}" source="${tokenSource}" ` +
-      `projectId=${projectId}`
-  );
+  const octokit = new Octokit({ auth: token })
+  let lastError: Error | null = null
 
-  const octokit = new Octokit({ auth: token });
-
-  let attempt = 0;
-  let lastError: Error | null = null;
-
-  while (attempt < maxRetries) {
-    attempt++;
-    console.log(
-      `[commit-reliability] Commit attempt ${attempt}/${maxRetries} — ` +
-        `${owner}/${repo}@${branch}:${filePath}`
-    );
-
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Fetch current file SHA (needed for updates; undefined for new files)
-      const currentSha = await getFileSha(octokit, { owner, repo, branch, filePath });
-
-      if (currentSha) {
-        console.log(
-          `[commit-reliability] File exists, updating — sha=${currentSha.slice(0, 8)} ` +
-            `${filePath}`
-        );
-      } else {
-        console.log(`[commit-reliability] File does not exist, creating — ${filePath}`);
-      }
+      const currentSha = await getFileSha(octokit, { owner, repo, branch, filePath })
 
       const { data } = await octokit.repos.createOrUpdateFileContents({
         owner,
@@ -98,220 +98,302 @@ export async function commitFileReliably(
         content,
         branch,
         sha: currentSha,
-        committer: {
-          name: committerName,
-          email: committerEmail,
-        },
-      });
+        committer: { name: committerName, email: committerEmail },
+      })
 
-      const result: CommitResult = {
+      return {
         sha: data.commit.sha ?? '',
         url: data.commit.html_url ?? '',
         tokenMode,
-      };
-
-      console.log(
-        `[commit-reliability] Commit successful — ` +
-          `sha=${result.sha.slice(0, 8)} tokenMode=${tokenMode} ` +
-          `projectId=${projectId} ${owner}/${repo}@${branch}:${filePath}`
-      );
-
-      return result;
+      }
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      const statusCode = (err as { status?: number }).status;
-
-      if (statusCode === 409) {
-        // SHA conflict — retry with fresh SHA
-        console.warn(
-          `[commit-reliability] SHA conflict on attempt ${attempt}, retrying — ` +
-            `${owner}/${repo}@${branch}:${filePath}`
-        );
-        await sleep(100 * attempt); // back-off: 100ms, 200ms, 300ms
-        continue;
+      lastError = err instanceof Error ? err : new Error(String(err))
+      const status = (err as { status?: number }).status
+      if (status === 409) {
+        await sleep(100 * attempt)
+        continue
       }
-
-      if (statusCode === 422) {
-        console.error(
-          `[commit-reliability] Unprocessable entity (422) — likely invalid content. ` +
-            `Not retrying. ${filePath}`
-        );
-        throw lastError;
-      }
-
-      if (statusCode === 404) {
-        console.error(
-          `[commit-reliability] Repository or branch not found (404) — ` +
-            `${owner}/${repo}@${branch}`
-        );
-        throw lastError;
-      }
-
-      if (statusCode === 401 || statusCode === 403) {
-        console.error(
-          `[commit-reliability] Authorization error (${statusCode}) — ` +
-            `tokenMode=${tokenMode} tokenSource="${tokenSource}" ` +
-            `${owner}/${repo}@${branch}:${filePath}`
-        );
-        throw lastError;
-      }
-
-      // Unknown error — retry
-      console.warn(
-        `[commit-reliability] Unexpected error on attempt ${attempt}, retrying — ` +
-          `status=${statusCode} error="${lastError.message}"`
-      );
-      await sleep(200 * attempt);
+      throw lastError
     }
   }
 
-  const finalMessage =
-    `[commit-reliability] Exhausted ${maxRetries} retries — ` +
-    `${owner}/${repo}@${branch}:${filePath} ` +
-    `lastError="${lastError?.message}"`;
-  console.error(finalMessage);
-  throw new Error(finalMessage);
+  throw new Error(
+    `[commit-reliability] Exhausted ${maxRetries} retries for ${owner}/${repo}:${filePath} — ${lastError?.message}`,
+  )
 }
 
-/**
- * Commits multiple files in a single tree+commit operation (atomic batch).
- * Uses ownership-aware token resolution.
- */
 export async function commitFilesBatch(options: {
-  adminId: string;
-  projectId: string;
-  owner: string;
-  repo: string;
-  branch: string;
-  files: Array<{ path: string; content: string }>;
-  commitMessage: string;
-  committerName?: string;
-  committerEmail?: string;
+  projectId: string
+  owner: string
+  repo: string
+  branch: string
+  files: Array<{ path: string; content: string }>
+  commitMessage: string
+  committerName?: string
+  committerEmail?: string
 }): Promise<CommitResult> {
   const {
-    adminId,
     projectId,
     owner,
     repo,
     branch,
     files,
     commitMessage,
-    committerName = 'Terrarium Bot',
-    committerEmail = 'bot@terrarium.dev',
-  } = options;
+    committerName = 'Build OS Bot',
+    committerEmail = 'bot@buildos.dev',
+  } = options
 
-  console.log(
-    `[commit-reliability] Starting batch commit — ` +
-      `projectId=${projectId} adminId=${adminId} ` +
-      `${owner}/${repo}@${branch} files=${files.length}`
-  );
+  const { token, mode: tokenMode } = await resolveGitHubToken(projectId)
 
-  // ── Resolve token via ownership resolver ──────────────────────────────────
-  const { token, mode: tokenMode, source: tokenSource } =
-    await resolveGitHubToken(adminId, projectId);
+  if (!token) {
+    throw new Error(`[commit-reliability] No GitHub token for project=${projectId}`)
+  }
 
-  console.log(
-    `[commit-reliability] Batch commit token resolved — ` +
-      `mode="${tokenMode}" source="${tokenSource}" projectId=${projectId}`
-  );
+  const octokit = new Octokit({ auth: token })
 
-  const octokit = new Octokit({ auth: token });
+  const { data: refData } = await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` })
+  const headSha = refData.object.sha
+
+  const { data: commitData } = await octokit.git.getCommit({ owner, repo, commit_sha: headSha })
+  const baseTreeSha = commitData.tree.sha
+
+  const treeItems: Array<{ path: string; mode: '100644'; type: 'blob'; sha: string }> = []
+  for (const file of files) {
+    const { data: blobData } = await octokit.git.createBlob({
+      owner,
+      repo,
+      content: file.content,
+      encoding: 'base64',
+    })
+    treeItems.push({ path: file.path, mode: '100644', type: 'blob', sha: blobData.sha })
+  }
+
+  const { data: newTree } = await octokit.git.createTree({
+    owner,
+    repo,
+    base_tree: baseTreeSha,
+    tree: treeItems,
+  })
+
+  const { data: newCommit } = await octokit.git.createCommit({
+    owner,
+    repo,
+    message: commitMessage,
+    tree: newTree.sha,
+    parents: [headSha],
+    committer: { name: committerName, email: committerEmail },
+    author: { name: committerName, email: committerEmail },
+  })
+
+  await octokit.git.updateRef({ owner, repo, ref: `heads/${branch}`, sha: newCommit.sha })
+
+  return { sha: newCommit.sha, url: newCommit.html_url, tokenMode }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G4: Verification + delivery logging
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verify a file exists in the GitHub repo after a commit.
+ */
+export async function verifyCommitDelivery(filePath: string): Promise<VerifyResult> {
+  const owner = process.env.GITHUB_REPO_OWNER ?? ''
+  const repo = process.env.GITHUB_REPO_NAME ?? ''
+  const branch = process.env.GITHUB_REPO_BRANCH ?? 'main'
+  const token = process.env.GITHUB_TOKEN ?? process.env.GITHUB_PAT ?? ''
+
+  if (!owner || !repo || !token) {
+    return { verified: false, notes: 'Missing GITHUB_REPO_OWNER/GITHUB_REPO_NAME/GITHUB_TOKEN env vars' }
+  }
 
   try {
-    // 1. Get current HEAD SHA
-    const { data: refData } = await octokit.git.getRef({
-      owner,
-      repo,
-      ref: `heads/${branch}`,
-    });
-    const headSha = refData.object.sha;
-    console.log(`[commit-reliability] HEAD SHA=${headSha.slice(0, 8)}`);
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
+      {
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      },
+    )
 
-    // 2. Get base tree SHA
-    const { data: commitData } = await octokit.git.getCommit({
-      owner,
-      repo,
-      commit_sha: headSha,
-    });
-    const baseTreeSha = commitData.tree.sha;
-
-    // 3. Create new tree with all file blobs
-    const treeItems: Array<{
-      path: string;
-      mode: '100644';
-      type: 'blob';
-      sha: string;
-    }> = [];
-
-    for (const file of files) {
-      const { data: blobData } = await octokit.git.createBlob({
-        owner,
-        repo,
-        content: file.content,
-        encoding: 'base64',
-      });
-      treeItems.push({
-        path: file.path,
-        mode: '100644',
-        type: 'blob',
-        sha: blobData.sha,
-      });
+    if (res.ok) {
+      return { verified: true, notes: `File found at ${filePath} in ${owner}/${repo}@${branch}` }
     }
-
-    const { data: newTree } = await octokit.git.createTree({
-      owner,
-      repo,
-      base_tree: baseTreeSha,
-      tree: treeItems,
-    });
-
-    // 4. Create commit
-    const { data: newCommit } = await octokit.git.createCommit({
-      owner,
-      repo,
-      message: commitMessage,
-      tree: newTree.sha,
-      parents: [headSha],
-      committer: { name: committerName, email: committerEmail },
-      author: { name: committerName, email: committerEmail },
-    });
-
-    // 5. Update HEAD ref
-    await octokit.git.updateRef({
-      owner,
-      repo,
-      ref: `heads/${branch}`,
-      sha: newCommit.sha,
-    });
-
-    const result: CommitResult = {
-      sha: newCommit.sha,
-      url: newCommit.html_url,
-      tokenMode,
-    };
-
-    console.log(
-      `[commit-reliability] Batch commit successful — ` +
-        `sha=${newCommit.sha.slice(0, 8)} files=${files.length} ` +
-        `tokenMode=${tokenMode} projectId=${projectId}`
-    );
-
-    return result;
+    if (res.status === 404) {
+      return { verified: false, notes: `File not found: ${filePath} in ${owner}/${repo}@${branch}` }
+    }
+    return { verified: false, notes: `GitHub API returned ${res.status} for ${filePath}` }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[commit-reliability] Batch commit failed — error="${message}" ` +
-        `projectId=${projectId} ${owner}/${repo}@${branch} tokenMode=${tokenMode}`
-    );
-    throw err;
+    const msg = err instanceof Error ? err.message : String(err)
+    return { verified: false, notes: `Verification error: ${msg}` }
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Log a commit delivery attempt to the commit_delivery_logs table.
+ * Non-fatal — swallows errors to avoid blocking agent pipeline.
+ */
+export async function logCommitDelivery(
+  admin: SupabaseClient,
+  options: DeliveryLogOptions,
+): Promise<string> {
+  try {
+    const { data, error } = await (admin as any)
+      .from('commit_delivery_logs')
+      .insert({
+        task_id: options.task_id,
+        project_id: options.project_id,
+        repo_name: options.repo_name,
+        branch_name: options.branch_name,
+        target_path: options.target_path,
+        stub_created: options.stub_created,
+        token_refreshed: options.token_refreshed,
+        commit_sha: options.commit_sha,
+        commit_verified: options.commit_verified,
+        verification_notes: options.verification_notes ?? null,
+        logged_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+
+    if (error || !data) {
+      console.warn('[commit-reliability] logCommitDelivery: could not insert row:', error?.message)
+      return 'noop'
+    }
+
+    return data.id as string
+  } catch (err) {
+    console.warn('[commit-reliability] logCommitDelivery error (non-fatal):', err)
+    return 'noop'
+  }
+}
+
+/**
+ * Escalate a commit delivery failure to the incident log.
+ */
+export async function escalateToIncident(
+  admin: SupabaseClient,
+  taskId: string,
+  projectId: string,
+  notes: string,
+  deliveryLogId: string,
+): Promise<void> {
+  try {
+    await (admin as any)
+      .from('incident_logs')
+      .insert({
+        task_id: taskId,
+        project_id: projectId,
+        category: 'commit_delivery',
+        notes,
+        delivery_log_id: deliveryLogId,
+        occurred_at: new Date().toISOString(),
+      })
+  } catch (err) {
+    console.warn('[commit-reliability] escalateToIncident error (non-fatal):', err)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G4: Stub file creation at dispatch time
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract file paths from a task's context_payload where intent is CREATE.
+ */
+export function extractCreatePaths(
+  payload: Record<string, unknown> | null,
+): string[] {
+  if (!payload) return []
+
+  const candidates: unknown[] = []
+  if (Array.isArray(payload.files)) candidates.push(...payload.files)
+  if (Array.isArray(payload.create_files)) candidates.push(...payload.create_files)
+  if (Array.isArray(payload.paths)) candidates.push(...payload.paths)
+
+  return candidates
+    .filter((f): f is string => typeof f === 'string' && f.length > 0)
+    .map((f) => f.trim())
+}
+
+/**
+ * Push a stub placeholder file to GitHub at dispatch time (G4 gate).
+ */
+export async function createStubFile(taskId: string, filePath: string): Promise<StubResult> {
+  const owner = process.env.GITHUB_REPO_OWNER ?? ''
+  const repo = process.env.GITHUB_REPO_NAME ?? ''
+  const branch = process.env.GITHUB_REPO_BRANCH ?? 'main'
+  const token = process.env.GITHUB_TOKEN ?? process.env.GITHUB_PAT ?? ''
+
+  if (!owner || !repo || !token) {
+    return {
+      success: false,
+      tokenRefreshed: false,
+      error: 'Missing GITHUB_REPO_OWNER/GITHUB_REPO_NAME/GITHUB_TOKEN env vars',
+    }
+  }
+
+  const stubContent = Buffer.from(
+    `// STUB — Task ${taskId}\n// This file will be replaced by the agent.\n`,
+  ).toString('base64')
+
+  try {
+    let existingSha: string | undefined
+    const checkRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
+      { headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' } },
+    )
+    if (checkRes.ok) {
+      const existing = await checkRes.json()
+      existingSha = existing.sha
+    }
+
+    const body: Record<string, unknown> = {
+      message: `[stub] Reserve ${filePath} for task ${taskId}`,
+      content: stubContent,
+      branch,
+    }
+    if (existingSha) body.sha = existingSha
+
+    const putRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+    )
+
+    if (!putRes.ok) {
+      const err = await putRes.text()
+      return { success: false, tokenRefreshed: false, error: `GitHub API ${putRes.status}: ${err}` }
+    }
+
+    const result = await putRes.json()
+    return {
+      success: true,
+      commitSha: result.commit?.sha,
+      tokenRefreshed: false,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, tokenRefreshed: false, error: msg }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function getFileSha(
   octokit: Octokit,
-  opts: { owner: string; repo: string; branch: string; filePath: string }
+  opts: { owner: string; repo: string; branch: string; filePath: string },
 ): Promise<string | undefined> {
   try {
     const { data } = await octokit.repos.getContent({
@@ -319,15 +401,15 @@ async function getFileSha(
       repo: opts.repo,
       path: opts.filePath,
       ref: opts.branch,
-    });
-    if (Array.isArray(data)) return undefined; // it's a directory
-    return (data as { sha: string }).sha;
+    })
+    if (Array.isArray(data)) return undefined
+    return (data as { sha: string }).sha
   } catch (err) {
-    if ((err as { status?: number }).status === 404) return undefined;
-    throw err;
+    if ((err as { status?: number }).status === 404) return undefined
+    throw err
   }
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
