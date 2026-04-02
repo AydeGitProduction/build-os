@@ -211,7 +211,14 @@ function extractTableReferences(output: string): string[] {
              'public', 'authorization', 'creating', 'metadata', 'connection',
              'vercel', 'github', 'supabase', 'oauth', 'redirect', 'callback',
              'access', 'refresh', 'bearer', 'header', 'scope', 'grant',
-             'workspace', 'organization', 'team', 'member', 'account'].includes(name)) {
+             'workspace', 'organization', 'team', 'member', 'account',
+             // G10 FIX v6: PostgreSQL system objects and SQL functions
+             'information_schema', 'pg_catalog', 'pg_tables', 'pg_namespace',
+             'unnest', 'generate_series', 'row_to_json', 'array_agg', 'json_agg',
+             'backup', 'temp', 'tmp', 'staging', 'archive', 'log', 'logs',
+             'current', 'previous', 'next', 'last', 'first',
+             'insert', 'update', 'delete', 'create', 'drop', 'alter', 'truncate',
+             'values', 'returning', 'conflict', 'excluded', 'nothing'].includes(name)) {
         tables.add(name)
       }
     }
