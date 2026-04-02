@@ -109,9 +109,13 @@ export async function acquireLock(
 
 /**
  * Release a lock by ID.
+ * BUG FIX: buildos_release_lock requires p_resource_id as first positional arg,
+ * but callers only have the lock ID. Use a direct DELETE instead — admin client
+ * uses service role which bypasses RLS, so this is safe and avoids the
+ * parameter mismatch that caused silent release failures.
  */
 export async function releaseLock(admin: SupabaseClient, lockId: string) {
-  await admin.rpc('buildos_release_lock', { p_lock_id: lockId })
+  await admin.from('resource_locks').delete().eq('id', lockId)
 }
 
 // ─── Audit Logging ───────────────────────────────────────────────────────────

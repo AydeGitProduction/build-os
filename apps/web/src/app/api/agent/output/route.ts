@@ -276,11 +276,15 @@ export async function POST(request: NextRequest) {
       .eq('id', task_run_id)
 
     // ── 8. Release lock ───────────────────────────────────────────────────────
-    // Find lock for this task_run and release it
+    // Find lock for this task_run and release it.
+    // BUG FIX: column is 'locked_by_task_run', not 'task_run_id' (matches migration 010 schema).
+    // Previously this query found nothing, making the manual release a no-op.
+    // The auto-release trigger on task_runs handles this correctly, but this
+    // manual release acts as a reliable backstop in case the trigger misfires.
     const { data: locks } = await admin
       .from('resource_locks')
       .select('id')
-      .eq('task_run_id', task_run_id)
+      .eq('locked_by_task_run', task_run_id)
       .eq('resource_type', 'task')
       .eq('resource_id', task_id)
 
@@ -455,7 +459,7 @@ export async function POST(request: NextRequest) {
           description: task.description || null,
           retry_count: task.retry_count || 0,
           max_retries: task.max_retries || 3,
-          raw_output: (agentOutput as { raw_text?: string | null } | null)?.raw_text || raw_text || null,
+          raw_output: (agentOutput as { raw_text?: string | null } | null)?.raw_text || (output ? JSON.stringify(output) : null),
         }
         const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
 
