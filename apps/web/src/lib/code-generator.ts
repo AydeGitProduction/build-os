@@ -46,7 +46,7 @@ export const ROLE_TO_PATH_MAP: Record<string, RolePathConfig> = {
     testDir: 'src/lib/__tests__',
     defaultExtension: '.ts',
     migrationDir: 'migrations',
-    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**'],
+    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/*.ts', 'src/*.js'],
     compilationRequired: true,
   },
   frontend_engineer: {
@@ -209,6 +209,8 @@ const MONOREPO_STRIP_PREFIXES = [
 const SRC_SUBDIRS = [
   'lib/', 'app/', 'services/', 'middleware/', 'types/', 'components/',
   'hooks/', 'styles/', 'utils/', 'contexts/', 'store/', 'pages/',
+  'routes/', 'orchestrator/', 'integrations/', 'webhooks/', 'config/',
+  'security/', 'platform/', 'registry/', 'validators/', 'providers/',
 ]
 
 function stripMonorepoPrefix(filePath: string): string {
@@ -304,6 +306,12 @@ export function validateFilePath(filePath: string, role: string): ValidationResu
 
   if (filePath.includes('..') || filePath.startsWith('/')) {
     errors.push(`Path "${filePath}" is not allowed: must be relative with no traversal`)
+    return { valid: false, errors, warnings }
+  }
+
+  // Reject directory paths (no file extension, or trailing slash)
+  if (filePath.endsWith('/') || (!filePath.includes('.') && !filePath.match(/\w+$/))) {
+    errors.push(`Path "${filePath}" appears to be a directory, not a file — skipped`)
     return { valid: false, errors, warnings }
   }
 
