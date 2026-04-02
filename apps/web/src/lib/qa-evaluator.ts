@@ -175,9 +175,19 @@ function extractTableReferences(output: string): string[] {
       // G10 FIX: 'the', 'a', 'an', 'this', 'that', 'each', 'both', 'all' added to prevent
       // natural-language prose (e.g. "updates from the task_runs table") from triggering
       // false-positive schema failures.
+      // G10 FIX v2: also exclude technical terms that appear after FROM in TS/JS/English prose
+      // but are NOT DB table names (vault, process, supabase, env, module, storage, etc.)
       if (!['select', 'where', 'join', 'left', 'right', 'inner', 'outer', 'on', 'and', 'or', 'null', 'not',
              'the', 'a', 'an', 'this', 'that', 'these', 'those', 'each', 'both', 'all', 'any', 'its',
-             'their', 'which', 'with', 'from', 'into', 'onto', 'over', 'under', 'after', 'before'].includes(name)) {
+             'their', 'which', 'with', 'from', 'into', 'onto', 'over', 'under', 'after', 'before',
+             // Technical terms false-positived as table names in TS/code output
+             'vault', 'process', 'supabase', 'env', 'module', 'storage', 'cache', 'config',
+             'database', 'db', 'client', 'server', 'api', 'auth', 'user', 'token', 'secret',
+             'decrypted_secrets', 'encrypted_secrets', 'raw', 'data', 'result', 'response',
+             'request', 'context', 'service', 'provider', 'connector', 'adapter',
+             'error', 'exception', 'handler', 'middleware', 'function', 'class', 'interface',
+             'type', 'export', 'import', 'return', 'await', 'async', 'const', 'let', 'var',
+             'true', 'false', 'undefined', 'null', 'new', 'this', 'super', 'void'].includes(name)) {
         tables.add(name)
       }
     }
