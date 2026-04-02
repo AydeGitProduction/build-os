@@ -404,7 +404,13 @@ function tryExtractCodeBlocksFromJson(rawOutput: string): ExtractedCodeBlock[] {
   } else if (parsed && typeof parsed === 'object') {
     const obj = parsed as Record<string, unknown>
     // { files: [...] } or { code: { files: [...] } }
-    const files = obj.files ?? (obj.code as Record<string, unknown> | null)?.files
+    // Support { files: [...] }, { code: { files: [...] } }, and { output: { files: [...] } }
+    // The last form is produced by backend_engineer when callers pass the full parsed structure
+    const outputObj = obj.output as Record<string, unknown> | null | undefined
+    const files =
+      obj.files ??
+      (obj.code as Record<string, unknown> | null)?.files ??
+      outputObj?.files
     if (Array.isArray(files)) entries.push(...(files as JsonFileEntry[]))
     // { "src/lib/foo.ts": "content" }
     else {
