@@ -60,6 +60,17 @@ const KNOWN_BUILDOS_TABLES = new Set([
   'users', 'profiles',
   // Other known tables
   'blockers', 'workspaces', 'wizard_state',
+  // Orchestration
+  'orchestration_runs', 'project_settings', 'orchestration_config',
+  // U1-B: Connections & Integrations layer
+  'provider_connections', 'project_integrations', 'integration_providers',
+  'workspace_connections', 'credentials', 'integration_credentials',
+  'integration_scopes', 'integration_assignments',
+  // G4 delivery + governance
+  'commit_delivery_logs', 'incident_logs', 'generation_events',
+  // Misc
+  'profiles', 'user_profiles', 'workspace_members', 'workspace_invites',
+  'migration_ledger', 'api_keys',
 ])
 
 // ── G10: Failure markers that indicate compilation/runtime errors ─────────────
@@ -335,8 +346,13 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     const hasExportContract = desc.includes('export') || hasRouteContract || hasComponentContract
 
     // Check for import statement presence when code references external modules
-    const hasModuleRefs = /from\s+['"][@a-zA-Z]/.test(output) // e.g., from 'next/server'
-    const hasImportStatements = /^import\s/m.test(output) || /\bimport\s*\{/.test(output)
+    const hasModuleRefs = /\bimport\s+.*\bfrom\s+['"][@a-zA-Z]/.test(output) // actual import statement with 'from'
+    const hasImportStatements =
+      /^import\s/m.test(output) ||                            // standard import
+      /\bimport\s*\{/.test(output) ||                         // named import
+      /\bexport\s+.*?\bfrom\s+['"]/.test(output) ||           // re-export
+      /\bimport\s*\(/.test(output) ||                         // dynamic import
+      /require\s*\(/.test(output)                             // CommonJS require
 
     // If code references modules but has no import statements, that's suspicious
     // (unless it's inside a string/comment)
