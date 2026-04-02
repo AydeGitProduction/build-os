@@ -75,6 +75,52 @@ const KNOWN_BUILDOS_TABLES = new Set([
   'migration_ledger', 'api_keys',
 ])
 
+// ── WS1 HARDENING: Forbidden packages — permanent stack discipline ────────────
+// Any agent output importing these packages is an automatic FAIL (WRONG_STACK).
+// These packages are NOT installed and MUST NOT be used in this codebase.
+// Correct alternatives: @supabase/ssr, createAdminSupabaseClient from @/lib/supabase/server
+
+const FORBIDDEN_PACKAGES = [
+  'next-auth',
+  'next-auth/',
+  'from "next-auth',
+  "from 'next-auth",
+  'require("next-auth',
+  "require('next-auth",
+  'prisma',
+  '@prisma/client',
+  'from "@prisma',
+  "from '@prisma",
+  'PrismaClient',
+  'prisma.', // prisma.user.findMany() etc
+  '@supabase/auth-helpers-nextjs',
+  'from "@supabase/auth-helpers',
+  "from '@supabase/auth-helpers",
+  'createClientComponentClient',
+  'createServerComponentClient',
+  'createMiddlewareClient',
+]
+
+function checkForbiddenPackages(output: string): {
+  hasForbidden: boolean
+  detected: string[]
+} {
+  const detected = FORBIDDEN_PACKAGES.filter(pkg => output.includes(pkg))
+  return { hasForbidden: detected.length > 0, detected }
+}
+
+// ── WS2 HARDENING: Protected files — prevent agent overwrite ─────────────────
+// If agent output explicitly names these files as "create" or "replace" targets,
+// flag as PROTECTED_FILE_VIOLATION. Agents must never rewrite these.
+
+const PROTECTED_FILES = [
+  'supabase/server.ts',
+  'lib/supabase/server',
+  'middleware.ts',
+  'lib/types.ts',
+  'lib/types/index.ts',
+]
+
 // ── G10: Failure markers that indicate compilation/runtime errors ─────────────
 
 const COMPILATION_FAILURE_MARKERS = [
@@ -353,6 +399,35 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
       }
     }
     evidence.compilation_passed = compilation_passed
+  }
+
+  // ── A2. Forbidden packages check (code tasks — WS1 HARDENING) ───────────────
+  // WRONG_STACK = automatic FAIL regardless of other checks.
+
+  if (isCodeTask) {
+    const forbiddenResult = checkForbiddenPackages(output)
+    if (forbiddenResult.hasForbidden) {
+      const detected = forbiddenResult.detected.slice(0, 3).join(', ')
+      return buildResult({
+        qa_type,
+        verdict: 'FAIL',
+        score: 0,
+        compilation_passed: false,
+        contract_check_passed: null,
+        schema_check_passed: null,
+        requirement_match_passed: false,
+        noteLines: [
+          `FAIL[WRONG_STACK]: Output uses FORBIDDEN packages: ${detected}`,
+          'RULE: ONLY @supabase/ssr and createAdminSupabaseClient from @/lib/supabase/server are allowed.',
+          'PROHIBITED: next-auth, prisma/@prisma/client, @supabase/auth-helpers-nextjs',
+        ],
+        evidence: { forbidden_packages_detected: forbiddenResult.detected, wrong_stack: true },
+        feedback: `QA FAIL (WRONG_STACK): Agent used forbidden package(s): ${detected}. This codebase uses ONLY Supabase native auth.`,
+        suggestion: 'Remove all next-auth/Prisma/auth-helpers imports. Use createAdminSupabaseClient() from @/lib/supabase/server for server-side auth.',
+        retry_count,
+      })
+    }
+    evidence.forbidden_packages_check = 'PASS — no forbidden packages detected'
   }
 
   // ── B. Contract/Import check (code tasks only) ────────────────────────────
