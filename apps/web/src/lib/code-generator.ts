@@ -277,6 +277,33 @@ export function extractCodeBlocks(rawText: string): ExtractedCodeBlock[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Protected files — agents must NEVER overwrite these
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Files that must never be overwritten by agent-generated code.
+ * These are core infrastructure files whose contents are carefully
+ * maintained by hand. Any agent output targeting one of these paths
+ * is rejected at write time (not just flagged in QA text analysis).
+ *
+ * When adding a new protected file keep the list sorted for readability.
+ */
+export const PROTECTED_FILES: ReadonlySet<string> = new Set([
+  'middleware.ts',
+  'next.config.js',
+  'next.config.ts',
+  'package.json',
+  'tsconfig.json',
+  'src/lib/code-generator.ts',
+  'src/lib/patch-engine.ts',
+  'src/lib/qa-evaluator.ts',
+  'src/lib/supabase/admin-client.ts',
+  'src/lib/supabase/client.ts',
+  'src/lib/supabase/server.ts',
+  'src/middleware.ts',
+])
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Validation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -299,6 +326,16 @@ function globMatch(pattern: string, path: string): boolean {
 export function validateFilePath(filePath: string, role: string): ValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
+
+  // ── Protected file check (write-time enforcement) ─────────────────────────
+  // This fires BEFORE any role or path validation so no role can bypass it.
+  if (PROTECTED_FILES.has(filePath)) {
+    errors.push(
+      `Path "${filePath}" is a protected infrastructure file and cannot be overwritten ` +
+        `by agent-generated code. If you need to update this file, do it manually.`,
+    )
+    return { valid: false, errors, warnings }
+  }
 
   const config = ROLE_TO_PATH_MAP[role]
   if (!config) {

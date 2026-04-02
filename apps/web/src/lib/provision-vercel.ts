@@ -1,8 +1,6 @@
 // src/lib/provision-vercel.ts
-
-import fetch from 'node-fetch';
-import { resolveProviderOwnership } from './resolveProviderOwnership';
-import { OwnershipResolutionError } from './types/ownership';
+// Native fetch is available globally in Next.js 13+ — no node-fetch needed.
+import { resolveProviderOwnership, OwnershipResolutionError } from './resolveProviderOwnership';
 
 // ---------------------------------------------------------------------------
 // Types
