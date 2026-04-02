@@ -46,7 +46,7 @@ export const ROLE_TO_PATH_MAP: Record<string, RolePathConfig> = {
     testDir: 'src/lib/__tests__',
     defaultExtension: '.ts',
     migrationDir: 'migrations',
-    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**'],
+    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**'],
     compilationRequired: true,
   },
   frontend_engineer: {
