@@ -172,13 +172,12 @@ function extractTableReferences(output: string): string[] {
     tables.add(m[1])
   }
 
-  // SQL patterns: INSERT INTO, FROM, UPDATE, DELETE FROM
-  const sqlPatterns = [
-    /INSERT\s+INTO\s+([a-z_][a-z0-9_]*)/gi,
-    /\bFROM\s+([a-z_][a-z0-9_]*)\b/gi,
-    /UPDATE\s+([a-z_][a-z0-9_]*)\s+SET/gi,
-    /DELETE\s+FROM\s+([a-z_][a-z0-9_]*)/gi,
-  ]
+  // G10 FIX v8: SQL pattern table extraction DISABLED — too many false positives.
+  // PostgreSQL functions (jsonb_each_text, unnest), system tables (pg_constraint,
+  // information_schema), variable names, and common English words all pattern-match
+  // against SQL keywords. Only Supabase .from('table') is reliable enough.
+  // SQL patterns previously used: INSERT INTO, FROM, UPDATE SET, DELETE FROM
+  const sqlPatterns: RegExp[] = [] // disabled
 
   for (const pattern of sqlPatterns) {
     pattern.lastIndex = 0
