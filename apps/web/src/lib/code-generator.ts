@@ -46,7 +46,7 @@ export const ROLE_TO_PATH_MAP: Record<string, RolePathConfig> = {
     testDir: 'src/lib/__tests__',
     defaultExtension: '.ts',
     migrationDir: 'migrations',
-    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/controllers/**', 'src/*.ts', 'src/*.js', 'scripts/**', 'tests/**', '__tests__/**', 'src/**/__tests__/**'],
+    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/controllers/**', 'src/validation/**', 'src/dispatch/**', 'src/domain/**', 'src/guardian/**', 'src/workers/**', 'src/models/**', 'src/*.ts', 'src/*.js', 'scripts/**', 'tests/**', '__tests__/**', 'src/**/__tests__/**'],
     compilationRequired: true,
   },
   frontend_engineer: {
@@ -213,9 +213,15 @@ const SRC_SUBDIRS = [
   'routes/', 'orchestrator/', 'integrations/', 'webhooks/', 'config/',
   'security/', 'platform/', 'registry/', 'validators/', 'providers/',
   'controllers/', 'resolvers/', 'schemas/', 'models/', 'server/',
+  'validation/', 'dispatch/', 'domain/', 'guardian/', 'workers/',
 ]
 
 function stripMonorepoPrefix(filePath: string): string {
+  // 0. Strip leading slash — agents sometimes emit absolute-looking paths like /api/foo.ts
+  if (filePath.startsWith('/')) {
+    filePath = filePath.slice(1)
+  }
+
   // 1. Strip workspace-level prefix (apps/web/ etc.)
   for (const prefix of MONOREPO_STRIP_PREFIXES) {
     if (filePath.startsWith(prefix)) {
