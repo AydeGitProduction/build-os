@@ -177,6 +177,34 @@ export async function POST(request: NextRequest) {
     existingFilePaths: resolvedExistingPaths,
   })
 
+  // Step 2b: WS1 Hard Language Lock
+  // Reject any agent output whose primary language is Go, Python, Rust, or Java.
+  // This is a TypeScript/Next.js/SQL-only project. Wrong-language output is a
+  // fatal error — it means the agent is misconfigured, not a recoverable path issue.
+  const FORBIDDEN_LANGUAGES = new Set(['go', 'python', 'rust', 'java'])
+  if (FORBIDDEN_LANGUAGES.has(generationResult.language)) {
+    const langLockError = `WS1-LANG-LOCK: Agent produced ${generationResult.language} output — only TypeScript/SQL is permitted for this project. Ensure agent system prompt includes LANGUAGE LOCK constraint.`
+
+    await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
+      generation_errors: [langLockError],
+    })
+
+    await recordGenerationEvent(
+      supabase, project_id, task_id, agent_output_id,
+      'compile_failed', [], [langLockError],
+    )
+
+    return NextResponse.json(
+      {
+        error: langLockError,
+        language_mismatch: true,
+        detected_language: generationResult.language,
+        hint: 'Update agent system prompt to include explicit TypeScript-only language constraint.',
+      },
+      { status: 422 },
+    )
+  }
+
   // Step 3: Validation gate
   // DESIGN: Path-validation errors on individual blocks (e.g. ".env.local" outside allowed
   // paths, directory paths) are soft failures — the block is skipped but other valid blocks
@@ -351,16 +379,35 @@ export async function POST(request: NextRequest) {
 
         // ── G4 enforcement: block task if any file unverified ─────────────────
         if (!allFilesVerified) {
-          // Force task back to 'blocked' — it must not remain in awaiting_review
-          // with unverified code delivery
-          await adminForCommit
+          // WS2: mark generation as commit_failed (not files_written) — truth matters
+          await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
+            generation_errors: ['G4: commit_verified=false — files written locally but not confirmed in repo'],
+          })
+
+          // WS3: Atomicity fix — only force 'blocked' if task is not already 'completed'
+          // QA verdict may have already set the task to 'completed' (fire-and-forget race).
+          // G4 must not override a QA-verified completed state.
+          const { data: currentState } = await adminForCommit
             .from('tasks')
-            .update({
-              status: 'blocked',
-              failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
-              failure_category: 'commit_delivery',
-            })
+            .select('status')
             .eq('id', task_id)
+            .single()
+
+          if (currentState?.status !== 'completed') {
+            await adminForCommit
+              .from('tasks')
+              .update({
+                status: 'blocked',
+                failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
+                failure_category: 'commit_delivery',
+              })
+              .eq('id', task_id)
+          } else {
+            console.warn(
+              `[agent/generate] G4: task ${task_id} already 'completed' by QA — not overriding with 'blocked'. ` +
+              `Files may not be in repo — manual verification required.`
+            )
+          }
 
           console.error(
             `[agent/generate] G4: task ${task_id} forced to 'blocked' — ` +
@@ -380,6 +427,11 @@ export async function POST(request: NextRequest) {
         commitError = commitResult.error ?? 'Unknown commit error'
         console.warn('[agent/generate] GitHub commit failed:', commitError)
         allFilesVerified = false
+
+        // WS2: update generation_status to commit_failed — files were written locally but never pushed
+        await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
+          generation_errors: [`G4: GitHub commit failed — ${commitError}`],
+        })
 
         // Log failure for each file
         for (const filePath of patchResult.files_modified) {
@@ -405,15 +457,23 @@ export async function POST(request: NextRequest) {
           )
         }
 
-        // Block task
-        await adminForCommit
+        // WS3: Atomicity — only block task if not already completed by QA
+        const { data: currentStateOnCommitFail } = await adminForCommit
           .from('tasks')
-          .update({
-            status: 'blocked',
-            failure_detail: `G4: GitHub commit failed — ${commitError}`,
-            failure_category: 'commit_delivery',
-          })
+          .select('status')
           .eq('id', task_id)
+          .single()
+
+        if (currentStateOnCommitFail?.status !== 'completed') {
+          await adminForCommit
+            .from('tasks')
+            .update({
+              status: 'blocked',
+              failure_detail: `G4: GitHub commit failed — ${commitError}`,
+              failure_category: 'commit_delivery',
+            })
+            .eq('id', task_id)
+        }
       }
     } else {
       commitError = `project_files returned ${projectFiles?.length ?? 0} rows for paths: ${patchResult.files_modified.join(', ')}`
@@ -441,6 +501,11 @@ export async function POST(request: NextRequest) {
     allFilesVerified = false
     console.error('[agent/generate] Commit/verify error:', commitError)
 
+    // WS2: mark as commit_failed (files exist locally but push threw an exception)
+    await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
+      generation_errors: [`G4: commit/verify exception — ${commitError}`],
+    })
+
     // Log unexpected error
     for (const filePath of patchResult.files_modified) {
       const logId = await logCommitDelivery(adminForCommit, {
@@ -464,20 +529,33 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Block task
-    await adminForCommit
+    // WS3: Atomicity — only block task if not already completed by QA
+    const { data: currentStateOnException } = await adminForCommit
       .from('tasks')
-      .update({
-        status: 'blocked',
-        failure_detail: `G4: commit/verify threw exception — ${commitError}`,
-        failure_category: 'commit_delivery',
-      })
+      .select('status')
       .eq('id', task_id)
+      .single()
+
+    if (currentStateOnException?.status !== 'completed') {
+      await adminForCommit
+        .from('tasks')
+        .update({
+          status: 'blocked',
+          failure_detail: `G4: commit/verify threw exception — ${commitError}`,
+          failure_category: 'commit_delivery',
+        })
+        .eq('id', task_id)
+    }
   }
+
+  // WS2: generation_status reflects actual delivery truth
+  // files_written = files in DB but commit not yet confirmed (or commit succeeded and verified)
+  // commit_failed = files in DB but git push/verify failed (already updated above in failure paths)
+  const finalGenerationStatus: GenerationStatus = allFilesVerified ? 'files_written' : 'commit_failed'
 
   return NextResponse.json({
     success: allFilesVerified,
-    generation_status: 'files_written' as GenerationStatus,
+    generation_status: finalGenerationStatus,
     files_written: patchResult.files_modified,
     applied_operations: patchResult.applied_operations,
     language: generationResult.language,

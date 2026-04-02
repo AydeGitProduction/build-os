@@ -433,6 +433,7 @@ export type GenerationStatus =
   | 'generating'
   | 'files_written'
   | 'compile_failed'
+  | 'commit_failed'  // WS2: files written locally but git push/verify failed — not delivered
 
 export interface ProjectFile {
   id: string

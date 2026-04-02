@@ -47,13 +47,13 @@ function getRoleConfig(agentRole: string, taskType: string): RoleConfig {
     },
     backend_engineer: {
       model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior backend engineer for Build OS. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/...","content":"..."}],"language":"typescript","dependencies":[],"env_vars":[],"migration_required":false,"migration_sql":null,"notes":""}}`,
+      systemPrompt: `You are a senior backend engineer for Build OS. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, C#, Ruby, or any other language under any circumstances. Any non-TypeScript/SQL output will be automatically rejected. Every file must have a .ts, .tsx, or .sql extension.`,
+      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/lib/example.ts","content":"// src/lib/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"migration_required":false,"migration_sql":null,"notes":""}}`,
     },
     frontend_engineer: {
       model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior frontend engineer for Build OS. Tech stack: Next.js 14, TypeScript, Tailwind CSS, Supabase Realtime. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/components/...","content":"..."}],"language":"typescript","dependencies":[],"notes":""}}`,
+      systemPrompt: `You are a senior frontend engineer for Build OS. Tech stack: Next.js 14, TypeScript, Tailwind CSS, Supabase Realtime. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or CSS (.css) files. NEVER write Go, Python, Rust, Java, or any non-TypeScript code. Every generated file must have a .ts or .tsx extension. Any other language is automatically rejected.`,
+      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/components/Example.tsx","content":"// src/components/Example.tsx\n// TypeScript/React content here"}],"language":"typescript","dependencies":[],"notes":""}}`,
     },
     qa_security_auditor: {
       model: MODEL_SONNET, maxTokens: 1024, temperature: 0.2,
@@ -62,8 +62,8 @@ function getRoleConfig(agentRole: string, taskType: string): RoleConfig {
     },
     integration_engineer: {
       model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior integration engineer for Build OS. Connect external services with webhook verification, idempotency, and secure credential storage. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"files":[],"language":"typescript","dependencies":[],"env_vars":[],"setup_steps":[],"notes":""}}`,
+      systemPrompt: `You are a senior integration engineer for Build OS. Connect external services with webhook verification, idempotency, and secure credential storage. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, or any non-TypeScript code. Every generated file must have a .ts, .tsx, or .sql extension. Any other language is automatically rejected.`,
+      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/lib/integrations/example.ts","content":"// src/lib/integrations/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"setup_steps":[],"notes":""}}`,
     },
     documentation_engineer: {
       model: MODEL_SONNET, maxTokens: 6144, temperature: 0.4,
@@ -99,7 +99,7 @@ function getRoleConfig(agentRole: string, taskType: string): RoleConfig {
 
   const roleConfig = configs[agentRole] || {
     model: MODEL_SONNET, maxTokens: 4096, temperature: 0.35,
-    systemPrompt: `You are an expert AI agent for Build OS. Execute assigned tasks to production quality. Respond with valid JSON ONLY.`,
+    systemPrompt: `You are an expert AI agent for Build OS. Execute assigned tasks to production quality. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK: If this task requires code generation, use ONLY TypeScript (.ts, .tsx) or SQL (.sql). NEVER generate Go, Python, or any non-TypeScript language.`,
     outputInstructions: `{"summary":"...","output":{"content":"# Output\\n\\n...","format":"markdown"}}`,
   }
 
