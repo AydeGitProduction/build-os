@@ -145,7 +145,7 @@ export async function POST(
       feature_slug: 'ws1-test-user-creation', order_index: 5,
       title: 'DB verification: all 4 test users exist in auth.users and public.users',
       description: 'Run verification query: SELECT id, email, created_at FROM auth.users WHERE email LIKE \'%@test.buildos.dev\' ORDER BY created_at. Expect 4 rows. Then verify public.users: SELECT id, email, role, organization_id FROM users WHERE email LIKE \'%@test.buildos.dev\'. Confirm each user has a public.users row. Record any user without a public.users row — this would indicate the auth trigger is not firing correctly.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
 
     // ── WS2: Membership Setup ──────────────────────────────────────────────
@@ -177,7 +177,7 @@ export async function POST(
       feature_slug: 'ws2-membership-setup', order_index: 5,
       title: 'DB verification: all membership rows exist with correct roles',
       description: 'Run comprehensive membership verification: (1) SELECT om.role, u.email FROM organization_members om JOIN users u ON u.id=om.user_id WHERE u.email LIKE \'%@test.buildos.dev\'; (2) Same for workspace_members; (3) Same for project_members. Expect: User A = owner/admin/admin, User B = member/viewer/viewer, User C = owner/admin/admin in separate org, User D = no rows (gap test).',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
 
     // ── WS3: Access Isolation Test ─────────────────────────────────────────
@@ -185,13 +185,13 @@ export async function POST(
       feature_slug: 'ws3-access-isolation', order_index: 1,
       title: 'DB proof: verify User B\'s RLS-scoped workspace visibility',
       description: 'Using the Management API, run: SET LOCAL role = authenticated; SET LOCAL request.jwt.claims = \'{"sub":"<USER_B_UUID>"}\'; SELECT * FROM workspaces; Verify User B sees only the workspace they have a membership row for. Confirm no workspaces from User C\'s org appear. Record exact row count.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws3-access-isolation', order_index: 2,
       title: 'API proof: call /api/workspaces as User B — verify scoped response',
       description: 'Generate a test JWT for User B (or use magic link to authenticate). Call GET /api/workspaces. Verify the response contains only the workspace User B is a member of. Record the workspace count. If >1 workspace appears for User B (who is only a member of 1), this is a leakage bug. Record the API response payload as proof.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws3-access-isolation', order_index: 3,
@@ -203,13 +203,13 @@ export async function POST(
       feature_slug: 'ws3-access-isolation', order_index: 4,
       title: 'Mutation test: attempt PATCH on a project as User B (viewer) — expect rejection',
       description: 'Using User B\'s session, attempt PATCH /api/projects/{project_id} with a minor change (e.g., name update). Expect either 403 Forbidden or an empty response due to RLS blocking the UPDATE. If the patch succeeds, this is a CRITICAL gap — viewers should not be able to modify projects. Record the HTTP status and response body.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws3-access-isolation', order_index: 5,
       title: 'RLS function verification: buildos_current_org_ids() returns correct scope per user',
       description: 'Via Management API, verify: for User A — SELECT buildos_current_org_ids() returns their org UUID. For User B — SELECT buildos_current_org_ids() returns the same org UUID (they are a member). For User C — SELECT buildos_current_org_ids() returns only their separate org UUID. Document results. Any overlap between User C and User A/B org IDs = CRITICAL.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
 
     // ── WS4: Cross-Org Isolation Test ─────────────────────────────────────
@@ -217,25 +217,25 @@ export async function POST(
       feature_slug: 'ws4-cross-org-isolation', order_index: 1,
       title: 'DB proof: User A cannot see User C\'s workspaces under RLS',
       description: 'Run SET LOCAL as User A. SELECT id, name FROM workspaces. Verify NONE of User C\'s workspace IDs appear. Then run SET LOCAL as User C. SELECT id, name FROM workspaces. Verify NONE of User A\'s workspaces appear. This is the definitive cross-org boundary test. Record both result sets as proof.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws4-cross-org-isolation', order_index: 2,
       title: 'API proof: User C cannot access User A\'s project via direct ID guess',
       description: 'Authenticate as User C. Attempt GET /api/projects/{user_a_project_id} — use a known project ID from User A\'s org. Expect 404 or empty data (RLS makes the row invisible, not 403). If the project details are returned, this is a CRITICAL security breach. Record HTTP status and response.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws4-cross-org-isolation', order_index: 3,
       title: 'DB proof: projects table RLS — User C sees zero rows from User A\'s org',
       description: 'Run SET LOCAL as User C. SELECT COUNT(*) FROM projects WHERE workspace_id IN (SELECT id FROM workspaces WHERE organization_id = <USER_A_ORG_ID>). Expect COUNT = 0. If any rows returned, the project RLS policy is broken. Record the count.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws4-cross-org-isolation', order_index: 4,
       title: 'Browser proof: log in as User C — confirm only User C org data visible',
       description: 'Using a magic link or direct login for User C, navigate to the Build OS dashboard. Verify the workspace dropdown shows only User C\'s workspace. Verify no project names from User A\'s org appear. Take a screenshot as browser proof. If cross-org data appears in the UI, classify as CRITICAL.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
 
     // ── WS5: Role-Based UI Test ────────────────────────────────────────────
@@ -275,13 +275,13 @@ export async function POST(
       feature_slug: 'ws6-rls-edge-cases', order_index: 1,
       title: 'Edge case: User B queries tasks table — verify RLS scoping',
       description: 'As User B, query tasks directly: SELECT COUNT(*) FROM tasks. Via DB proof (SET LOCAL as User B), confirm User B only sees tasks for projects they are a member of. If User B sees all 1000+ tasks from User A\'s projects, RLS on tasks is broken. Record exact count and compare against expected (tasks in User B\'s project membership only).',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws6-rls-edge-cases', order_index: 2,
       title: 'Edge case: direct UUID guessing — GET /api/projects/{unknown_id} as User B',
       description: 'As User B, attempt to call GET /api/projects/{project_id_from_user_a_org}. Expect 404 or empty — RLS should make the row invisible. If project data is returned, this is a CRITICAL gap. Try 3 different project IDs from User A\'s org. Record all responses.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
     {
       feature_slug: 'ws6-rls-edge-cases', order_index: 3,
@@ -299,7 +299,7 @@ export async function POST(
       feature_slug: 'ws6-rls-edge-cases', order_index: 5,
       title: 'Edge case: environment_variables table — User B cannot see other org secrets',
       description: 'As User B (viewer in User A\'s org), query environment_variables. Verify only variables for projects User B has membership in are returned. As User C, query environment_variables — should see ZERO rows from User A\'s org. Record results. Any cross-org secret leakage = CRITICAL.',
-      agent_role: 'qa_engineer', task_type: 'qa', priority: 'critical',
+      agent_role: 'qa_security_auditor', task_type: 'qa', priority: 'critical',
     },
 
     // ── WS7: Auto-Membership Gap Test ─────────────────────────────────────
