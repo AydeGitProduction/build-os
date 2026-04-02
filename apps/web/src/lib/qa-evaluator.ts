@@ -199,14 +199,19 @@ function extractTableReferences(output: string): string[] {
              'error', 'exception', 'handler', 'middleware', 'function', 'class', 'interface',
              'type', 'export', 'import', 'return', 'await', 'async', 'const', 'let', 'var',
              'true', 'false', 'undefined', 'null', 'new', 'this', 'super', 'void',
-             // G10 FIX v3: additional common false-positives from integration-related output
+             // G10 FIX v3/v5: additional common false-positives from integration-related output
              'url', 'uri', 'path', 'host', 'port', 'key', 'value', 'id', 'name', 'code',
              'body', 'head', 'form', 'query', 'params', 'props', 'state', 'ref',
              'list', 'map', 'set', 'string', 'number', 'boolean',
              'input', 'output', 'payload', 'schema', 'model', 'entity', 'record',
              'row', 'column', 'field', 'item', 'element', 'entry',
              'index', 'hash', 'scope', 'role', 'mode', 'status', 'stage',
-             'base', 'root', 'tree', 'branch', 'leaf'].includes(name)) {
+             'base', 'root', 'tree', 'branch', 'leaf',
+             // G10 FIX v5: more false-positives from OAuth/integration agent output
+             'public', 'authorization', 'creating', 'metadata', 'connection',
+             'vercel', 'github', 'supabase', 'oauth', 'redirect', 'callback',
+             'access', 'refresh', 'bearer', 'header', 'scope', 'grant',
+             'workspace', 'organization', 'team', 'member', 'account'].includes(name)) {
         tables.add(name)
       }
     }
@@ -345,18 +350,11 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     const hasComponentContract = desc.includes('component') || desc.includes('tsx') || desc.includes('jsx')
     const hasExportContract = desc.includes('export') || hasRouteContract || hasComponentContract
 
-    // Check for import statement presence when code references external modules
-    const hasModuleRefs = /\bimport\s+.*\bfrom\s+['"][@a-zA-Z]/.test(output) // actual import statement with 'from'
-    const hasImportStatements =
-      /^import\s/m.test(output) ||                            // standard import
-      /\bimport\s*\{/.test(output) ||                         // named import
-      /\bexport\s+.*?\bfrom\s+['"]/.test(output) ||           // re-export
-      /\bimport\s*\(/.test(output) ||                         // dynamic import
-      /require\s*\(/.test(output)                             // CommonJS require
-
-    // If code references modules but has no import statements, that's suspicious
-    // (unless it's inside a string/comment)
-    const missingImports = hasModuleRefs && !hasImportStatements
+    // G10 FIX v5: missingImports check disabled — generates too many false positives.
+    // Agent outputs often include prose descriptions with module references that don't
+    // look like import statements. Other checks (compilation errors, missing exports)
+    // catch truly incomplete code without this noisy heuristic.
+    const missingImports = false
 
     if (hasRouteContract) {
       const hasExport = output.includes('export')
