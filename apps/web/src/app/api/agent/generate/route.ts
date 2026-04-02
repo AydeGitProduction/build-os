@@ -321,23 +321,28 @@ export async function POST(request: NextRequest) {
 
   // ── Resolve per-project GitHub repo from project_integrations ─────────────
   // Agents commit to the project's own GitHub repo, not the platform monorepo.
-  // If no project integration is found, falls back to global GITHUB_REPO_* env vars.
+  // project_integrations.environment_map contains github_repo_url when the
+  // integration is GitHub (format: "https://github.com/<owner>/<repo>").
+  // Falls back to global GITHUB_REPO_* env vars if no integration is found.
   let projectRepoOverride: CommitRepoOverride | undefined
   try {
-    const { data: githubIntegration } = await adminForCommit
+    const { data: integrations } = await (adminForCommit as any)
       .from('project_integrations')
-      .select('external_id, config')
+      .select('environment_map')
       .eq('project_id', project_id)
-      .eq('provider', 'github')
       .eq('status', 'active')
-      .maybeSingle()
 
-    if (githubIntegration?.external_id) {
-      // external_id format: "owner/repo"
-      const parts = (githubIntegration.external_id as string).split('/')
-      if (parts.length >= 2) {
-        const repoOwner = parts[0]
-        const repoName = parts.slice(1).join('/')
+    const githubIntegration = (integrations as any[])?.find(
+      (i: any) => i?.environment_map?.github_repo_url
+    )
+
+    if (githubIntegration?.environment_map?.github_repo_url) {
+      const repoUrl = githubIntegration.environment_map.github_repo_url as string
+      // Parse: https://github.com/owner/repo
+      const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/)
+      if (match) {
+        const repoOwner = match[1]
+        const repoName = match[2]
         console.log(`[agent/generate] Using per-project GitHub repo: ${repoOwner}/${repoName}`)
         projectRepoOverride = {
           owner: repoOwner,
