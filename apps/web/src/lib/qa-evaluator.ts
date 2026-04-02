@@ -187,7 +187,15 @@ function extractTableReferences(output: string): string[] {
              'request', 'context', 'service', 'provider', 'connector', 'adapter',
              'error', 'exception', 'handler', 'middleware', 'function', 'class', 'interface',
              'type', 'export', 'import', 'return', 'await', 'async', 'const', 'let', 'var',
-             'true', 'false', 'undefined', 'null', 'new', 'this', 'super', 'void'].includes(name)) {
+             'true', 'false', 'undefined', 'null', 'new', 'this', 'super', 'void',
+             // G10 FIX v3: additional common false-positives from integration-related output
+             'url', 'uri', 'path', 'host', 'port', 'key', 'value', 'id', 'name', 'code',
+             'body', 'head', 'form', 'query', 'params', 'props', 'state', 'ref',
+             'list', 'map', 'set', 'string', 'number', 'boolean',
+             'input', 'output', 'payload', 'schema', 'model', 'entity', 'record',
+             'row', 'column', 'field', 'item', 'element', 'entry',
+             'index', 'hash', 'scope', 'role', 'mode', 'status', 'stage',
+             'base', 'root', 'tree', 'branch', 'leaf'].includes(name)) {
         tables.add(name)
       }
     }
