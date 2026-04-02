@@ -46,7 +46,7 @@ export const ROLE_TO_PATH_MAP: Record<string, RolePathConfig> = {
     testDir: 'src/lib/__tests__',
     defaultExtension: '.ts',
     migrationDir: 'migrations',
-    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/controllers/**', 'src/*.ts', 'src/*.js', 'scripts/**'],
+    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/controllers/**', 'src/*.ts', 'src/*.js', 'scripts/**', 'tests/**', '__tests__/**', 'src/**/__tests__/**'],
     compilationRequired: true,
   },
   frontend_engineer: {
@@ -202,6 +202,7 @@ const MONOREPO_STRIP_PREFIXES = [
   'apps/web/',
   'app/web/',
   'packages/web/',
+  'db/', // e.g. db/migrations/foo.sql → migrations/foo.sql
 ]
 
 // Known src subdirectories — when an agent omits the leading "src/" we add it back.
