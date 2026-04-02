@@ -171,8 +171,13 @@ function extractTableReferences(output: string): string[] {
     pattern.lastIndex = 0
     while ((m = pattern.exec(output)) !== null) {
       const name = m[1].toLowerCase()
-      // Skip SQL keywords that look like table names
-      if (!['select', 'where', 'join', 'left', 'right', 'inner', 'outer', 'on', 'and', 'or', 'null', 'not'].includes(name)) {
+      // Skip SQL keywords and English stop words that pattern-match as table names
+      // G10 FIX: 'the', 'a', 'an', 'this', 'that', 'each', 'both', 'all' added to prevent
+      // natural-language prose (e.g. "updates from the task_runs table") from triggering
+      // false-positive schema failures.
+      if (!['select', 'where', 'join', 'left', 'right', 'inner', 'outer', 'on', 'and', 'or', 'null', 'not',
+             'the', 'a', 'an', 'this', 'that', 'these', 'those', 'each', 'both', 'all', 'any', 'its',
+             'their', 'which', 'with', 'from', 'into', 'onto', 'over', 'under', 'after', 'before'].includes(name)) {
         tables.add(name)
       }
     }
