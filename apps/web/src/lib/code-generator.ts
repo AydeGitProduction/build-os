@@ -252,7 +252,10 @@ function extractFilenameFromCode(code: string): string | null {
 export function extractCodeBlocks(rawText: string): ExtractedCodeBlock[] {
   const blocks: ExtractedCodeBlock[] = []
   // Match fenced code blocks: ```lang [optional filename]\n...code...\n```
-  const fenceRegex = /^```(\w+)?(?:\s+([\w./\-]+))?\s*\n([\s\S]*?)^```/gm
+  // NOTE: Use [ \t]+ (not \s+) for the inline filename separator so that newlines
+  // cannot be consumed — preventing the first line of the code block content from
+  // being mistaken for an inline filename (e.g. a directory tree "apps/web/src/").
+  const fenceRegex = /^```(\w+)?(?:[ \t]+([\w./\-]+))?[ \t]*\n([\s\S]*?)^```/gm
   let match: RegExpExecArray | null
 
   const lines = rawText.split('\n')

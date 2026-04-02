@@ -177,8 +177,20 @@ export async function POST(request: NextRequest) {
     existingFilePaths: resolvedExistingPaths,
   })
 
-  // Step 3: Validation gate — abort if parsing errors
-  if (!generationResult.validation.valid) {
+  // Step 3: Validation gate
+  // DESIGN: Path-validation errors on individual blocks (e.g. ".env.local" outside allowed
+  // paths, directory paths) are soft failures — the block is skipped but other valid blocks
+  // are still applied. We only hard-abort if NO valid operations were produced at all.
+  // Protected-file violations are still fatal since they indicate a misconfigured agent.
+  const hasFatalErrors =
+    !generationResult.validation.valid &&
+    generationResult.operations.length === 0
+
+  const hasProtectedFileViolation = generationResult.validation.errors.some((e) =>
+    e.includes('protected infrastructure file'),
+  )
+
+  if (hasProtectedFileViolation || hasFatalErrors) {
     await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
       generation_errors: generationResult.validation.errors,
     })
@@ -195,7 +207,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        error: 'Code generation validation failed',
+        error: hasProtectedFileViolation
+          ? 'Agent attempted to overwrite a protected infrastructure file'
+          : 'Code generation validation failed — no valid operations produced',
         validation_errors: generationResult.validation.errors,
         warnings: generationResult.validation.warnings,
       },
