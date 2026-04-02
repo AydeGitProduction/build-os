@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/supabase/server'
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
-import { commitFilesToGitHub, triggerVercelDeploy } from '@/lib/github-commit'
+import { commitFilesToGitHub, triggerVercelDeploy, CommitRepoOverride } from '@/lib/github-commit'
 import {
   verifyCommitDelivery,
   logCommitDelivery,
@@ -319,6 +319,40 @@ export async function POST(request: NextRequest) {
 
   const adminForCommit = createAdminSupabaseClient()
 
+  // ── Resolve per-project GitHub repo from project_integrations ─────────────
+  // Agents commit to the project's own GitHub repo, not the platform monorepo.
+  // If no project integration is found, falls back to global GITHUB_REPO_* env vars.
+  let projectRepoOverride: CommitRepoOverride | undefined
+  try {
+    const { data: githubIntegration } = await adminForCommit
+      .from('project_integrations')
+      .select('external_id, config')
+      .eq('project_id', project_id)
+      .eq('provider', 'github')
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (githubIntegration?.external_id) {
+      // external_id format: "owner/repo"
+      const parts = (githubIntegration.external_id as string).split('/')
+      if (parts.length >= 2) {
+        const repoOwner = parts[0]
+        const repoName = parts.slice(1).join('/')
+        console.log(`[agent/generate] Using per-project GitHub repo: ${repoOwner}/${repoName}`)
+        projectRepoOverride = {
+          owner: repoOwner,
+          repo: repoName,
+          // noPathPrefix: standalone project repos have files at root, not under apps/web/
+          noPathPrefix: true,
+        }
+      }
+    } else {
+      console.log(`[agent/generate] No project GitHub integration found — using global env vars`)
+    }
+  } catch (intErr) {
+    console.warn(`[agent/generate] Could not fetch project_integrations:`, intErr)
+  }
+
   try {
     const { data: projectFiles } = await adminForCommit
       .from('project_files')
@@ -335,6 +369,8 @@ export async function POST(request: NextRequest) {
       const commitResult = await commitFilesToGitHub(
         projectFiles.map(f => ({ path: f.file_path, content: f.content })),
         commitMessage,
+        undefined,
+        projectRepoOverride,
       )
 
       if (commitResult.success) {
@@ -350,8 +386,10 @@ export async function POST(request: NextRequest) {
           const logId = await logCommitDelivery(adminForCommit, {
             task_id,
             project_id,
-            repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
-            branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+            repo_name: projectRepoOverride?.owner && projectRepoOverride?.repo
+              ? `${projectRepoOverride.owner}/${projectRepoOverride.repo}`
+              : `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+            branch_name: projectRepoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH ?? 'main',
             target_path: filePath,
             stub_created: false, // stub is set at dispatch time; this is post-commit verify
             token_refreshed: true, // verifyCommitDelivery always calls ensureFreshToken
@@ -438,8 +476,10 @@ export async function POST(request: NextRequest) {
           const logId = await logCommitDelivery(adminForCommit, {
             task_id,
             project_id,
-            repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
-            branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
+            repo_name: projectRepoOverride?.owner && projectRepoOverride?.repo
+              ? `${projectRepoOverride.owner}/${projectRepoOverride.repo}`
+              : `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+            branch_name: projectRepoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH ?? 'main',
             target_path: filePath,
             stub_created: false,
             token_refreshed: false,

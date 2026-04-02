@@ -112,6 +112,16 @@ async function getInstallationToken(appId: string, installationId: string, priva
 // Main commit function
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Per-project repo override — supersedes global env vars when provided */
+export interface CommitRepoOverride {
+  owner?: string
+  repo?: string
+  installationId?: string
+  branch?: string
+  /** When true, suppresses the GITHUB_REPO_PATH_PREFIX env var prefix (use for standalone project repos) */
+  noPathPrefix?: boolean
+}
+
 export async function commitFilesToGitHub(
   files: CommitFile[],
   commitMessage: string,
@@ -119,18 +129,25 @@ export async function commitFilesToGitHub(
    *  Use when project_files stores normalised paths (e.g. src/lib/foo.ts)
    *  but the repo has them under a monorepo workspace (e.g. apps/web/src/lib/foo.ts).
    *  Falls back to GITHUB_REPO_PATH_PREFIX env var if not provided.
+   *  Pass '' or set repoOverride.noPathPrefix=true to disable for standalone repos.
    */
   pathPrefix?: string,
+  /** Optional per-project repo override — use instead of global env vars */
+  repoOverride?: CommitRepoOverride,
 ): Promise<CommitResult> {
-  const prefix = pathPrefix ?? process.env.GITHUB_REPO_PATH_PREFIX ?? ''
+  const prefix = repoOverride?.noPathPrefix
+    ? ''
+    : (pathPrefix ?? process.env.GITHUB_REPO_PATH_PREFIX ?? '')
   // ── 1. Config validation ───────────────────────────────────────────────────
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
   // Support both naming conventions: GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
-  const installationId = process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID
-  const owner = process.env.GITHUB_REPO_OWNER
-  const repo = process.env.GITHUB_REPO_NAME
-  const branch = process.env.GITHUB_REPO_BRANCH || 'master'
+  const installationId = repoOverride?.installationId
+    ?? process.env.GITHUB_INSTALLATION_ID
+    ?? process.env.GITHUB_APP_INSTALLATION_ID
+  const owner = repoOverride?.owner ?? process.env.GITHUB_REPO_OWNER
+  const repo = repoOverride?.repo ?? process.env.GITHUB_REPO_NAME
+  const branch = repoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH || 'main'
 
   const missing = [
     !appId && 'GITHUB_APP_ID',
