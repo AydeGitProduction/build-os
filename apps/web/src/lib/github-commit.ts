@@ -147,7 +147,7 @@ export async function commitFilesToGitHub(
     ?? process.env.GITHUB_APP_INSTALLATION_ID
   const owner = repoOverride?.owner ?? process.env.GITHUB_REPO_OWNER
   const repo = repoOverride?.repo ?? process.env.GITHUB_REPO_NAME
-  const branch = repoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH || 'main'
+  const branch = (repoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH) || 'main'
 
   const missing = [
     !appId && 'GITHUB_APP_ID',
