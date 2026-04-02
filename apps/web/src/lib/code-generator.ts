@@ -46,7 +46,7 @@ export const ROLE_TO_PATH_MAP: Record<string, RolePathConfig> = {
     testDir: 'src/lib/__tests__',
     defaultExtension: '.ts',
     migrationDir: 'migrations',
-    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/*.ts', 'src/*.js'],
+    allowedPaths: ['src/lib/**', 'src/services/**', 'src/middleware/**', 'migrations/**', 'src/types/**', 'src/app/**', 'src/routes/**', 'src/orchestrator/**', 'src/controllers/**', 'src/*.ts', 'src/*.js', 'scripts/**'],
     compilationRequired: true,
   },
   frontend_engineer: {
@@ -211,6 +211,7 @@ const SRC_SUBDIRS = [
   'hooks/', 'styles/', 'utils/', 'contexts/', 'store/', 'pages/',
   'routes/', 'orchestrator/', 'integrations/', 'webhooks/', 'config/',
   'security/', 'platform/', 'registry/', 'validators/', 'providers/',
+  'controllers/', 'resolvers/', 'schemas/', 'models/', 'server/',
 ]
 
 function stripMonorepoPrefix(filePath: string): string {
