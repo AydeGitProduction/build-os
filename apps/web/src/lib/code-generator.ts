@@ -204,10 +204,25 @@ const MONOREPO_STRIP_PREFIXES = [
   'packages/web/',
 ]
 
+// Known src subdirectories — when an agent omits the leading "src/" we add it back.
+// e.g. "lib/foo.ts" → "src/lib/foo.ts", "app/api/route.ts" → "src/app/api/route.ts"
+const SRC_SUBDIRS = [
+  'lib/', 'app/', 'services/', 'middleware/', 'types/', 'components/',
+  'hooks/', 'styles/', 'utils/', 'contexts/', 'store/', 'pages/',
+]
+
 function stripMonorepoPrefix(filePath: string): string {
+  // 1. Strip workspace-level prefix (apps/web/ etc.)
   for (const prefix of MONOREPO_STRIP_PREFIXES) {
     if (filePath.startsWith(prefix)) {
-      return filePath.slice(prefix.length)
+      filePath = filePath.slice(prefix.length)
+      break
+    }
+  }
+  // 2. Prepend src/ when agents write bare subdirectory paths (lib/foo.ts → src/lib/foo.ts)
+  for (const subdir of SRC_SUBDIRS) {
+    if (filePath.startsWith(subdir)) {
+      return `src/${filePath}`
     }
   }
   return filePath
