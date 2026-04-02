@@ -66,6 +66,8 @@ const KNOWN_BUILDOS_TABLES = new Set([
   'provider_connections', 'project_integrations', 'integration_providers',
   'workspace_connections', 'credentials', 'integration_credentials',
   'integration_scopes', 'integration_assignments',
+  'integration_environments', 'integration_environment_credentials',
+  'project_credentials', 'environment_credentials',
   // G4 delivery + governance
   'commit_delivery_logs', 'incident_logs', 'generation_events',
   // Misc
@@ -218,7 +220,12 @@ function extractTableReferences(output: string): string[] {
              'backup', 'temp', 'tmp', 'staging', 'archive', 'log', 'logs',
              'current', 'previous', 'next', 'last', 'first',
              'insert', 'update', 'delete', 'create', 'drop', 'alter', 'truncate',
-             'values', 'returning', 'conflict', 'excluded', 'nothing'].includes(name)) {
+             'values', 'returning', 'conflict', 'excluded', 'nothing',
+             // G10 FIX v7: English words appearing after SQL keywords (FROM X, UPDATE X)
+             'existing', 'options', 'environment', 'environments', 'integration',
+             'integrations', 'credentials_map', 'environment_map', 'credential_map',
+             'entries', 'mapping', 'config_map', 'settings_map', 'targets',
+             'results', 'records', 'items', 'objects', 'nodes', 'edges'].includes(name)) {
         tables.add(name)
       }
     }
