@@ -45,14 +45,10 @@ export class OwnershipResolutionError extends Error {
 }
 
 // src/lib/resolveProviderOwnership.ts (continued)
+// Types are defined above in this same file — no separate import needed.
 
 import { createClient } from '@supabase/supabase-js';
 import { decrypt } from './encryption';
-import {
-  OwnershipResolutionError,
-  ResolvedOwnership,
-  ProviderConnection,
-} from './types/ownership';
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
