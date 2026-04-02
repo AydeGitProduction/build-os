@@ -302,7 +302,7 @@ export const TASK_STATUS_TRANSITIONS: Record<string, string[]> = {
   ready:           ['dispatched', 'cancelled'],
   dispatched:      ['in_progress', 'awaiting_review', 'failed', 'blocked'],
   in_progress:     ['awaiting_review', 'blocked', 'failed'],
-  awaiting_review: ['in_qa', 'in_progress', 'blocked'],
+  awaiting_review: ['in_qa', 'in_progress', 'blocked', 'ready'], // 'ready' allows QA-fail retry re-queue
   in_qa:           ['completed', 'in_progress', 'blocked'],
   blocked:         ['ready', 'cancelled'],
   failed:          ['ready', 'cancelled'],

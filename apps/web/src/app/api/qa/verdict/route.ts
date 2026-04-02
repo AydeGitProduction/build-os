@@ -143,7 +143,10 @@ export async function POST(request: NextRequest) {
       if (newRetryCount >= (task.max_retries || 3)) {
         newStatus = 'failed'
       } else {
-        newStatus = 'in_progress' // Send back for rework
+        // BUG FIX: Use 'ready' instead of 'in_progress' so the orchestrator
+        // can re-dispatch the task. Setting to 'in_progress' leaves the task
+        // orphaned — no active run, no dispatch trigger, stuck forever.
+        newStatus = 'ready' // Re-queue for orchestrator dispatch
         await admin.from('tasks').update({ retry_count: newRetryCount }).eq('id', task_id)
       }
     }
@@ -163,6 +166,20 @@ export async function POST(request: NextRequest) {
       status: newStatus,
       completed_at: passed ? new Date().toISOString() : null,
     }).eq('id', task_id)
+
+    // ── Fire orchestration tick on retry (re-queue needs a dispatch trigger) ──
+    if (newStatus === 'ready' && task.project_id) {
+      try {
+        const BUILDOS_SECRET = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || ''
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL ||
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+        fetch(`${baseUrl}/api/orchestrate/tick?project_id=${task.project_id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': BUILDOS_SECRET },
+          body: JSON.stringify({ triggered_by: 'qa_retry_requeue' }),
+        }).catch(() => {}) // fire-and-forget
+      } catch { /* non-fatal */ }
+    }
 
     // ── Check if all tasks in feature are complete ────────────────────────────
     if (passed && task.feature_id) {
