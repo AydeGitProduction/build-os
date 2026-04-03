@@ -73,6 +73,26 @@ const KNOWN_BUILDOS_TABLES = new Set([
   // Misc
   'profiles', 'user_profiles', 'workspace_members', 'workspace_invites',
   'migration_ledger', 'api_keys',
+  // Synced from BUILDOS_SCHEMA_SNAPSHOT (Railway) — tables Railway agents are told exist
+  // Multi-tenant / membership
+  'organizations', 'organization_members', 'project_members',
+  // Project & blueprint metadata
+  'project_files', 'project_environments', 'project_tech_stack_items',
+  'blueprints', 'blueprint_features', 'blueprint_stack_recommendations',
+  'questionnaires', 'artifacts',
+  // Pipeline internals
+  'job_queue', 'task_dependencies', 'worker_heartbeats', 'retry_logs',
+  'dead_letter_queue', 'blocked_reason_codes',
+  // Governance & delivery
+  'architecture_decisions', 'api_contracts',
+  'delivery_checkpoints', 'release_readiness', 'gate_policies',
+  'incident_fixes', 'incident_root_causes', 'system_incidents',
+  'reconciliation_events', 'state_ownership_registry',
+  // Cost & recommendations
+  'cost_estimates', 'recommendation_items', 'recommendation_reports',
+  // Infra
+  'deployment_targets', 'cutover_flags', 'file_locks',
+  'jsonb_output_schemas',
 ])
 
 // ── WS1 HARDENING: Forbidden packages — permanent stack discipline ────────────
