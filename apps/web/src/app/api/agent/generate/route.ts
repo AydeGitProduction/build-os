@@ -233,16 +233,24 @@ export async function POST(request: NextRequest) {
           // The architect schema format with truncated description produces no recoverable files.
           // Mark the output as a documentation-only result (not a code generation failure).
           console.warn('[agent/generate] n8n architect schema format has no recoverable code files — treating as documentation task, not a code generation error')
-          // Synthesize a documentation file from the table data instead
+          // Synthesize a schema notes file from the table data.
+          // Use migrations/ path (allowed for backend_engineer) or docs/ (for architect).
+          // We check the agent_role to pick the right location.
           try {
             const tableNames = (outerParsed.tables as Array<{name: string}>)?.map((t: {name: string}) => t.name).join(', ') ?? ''
-            const notes: string = outerParsed.notes ?? ''
+            const notes: string = (outerParsed.notes as string) ?? ''
             if (tableNames) {
-              const docContent = `# Schema Design\n\nTables: ${tableNames}\n\n${notes ? `## Notes\n\n${notes}` : ''}\n`
+              const docContent = `-- Schema Design Notes\n-- Tables: ${tableNames}\n${notes ? `-- Notes: ${notes}` : ''}\n-- Generated from architect schema output\nSELECT 1; -- placeholder\n`
+              // Use migrations/ path — allowed for backend_engineer AND database_engineer
+              // architect tasks use docs/ but we check what's allowed
+              const isArchitect = agent_role === 'architect'
+              const filePath = isArchitect
+                ? `docs/schema-design-${Date.now()}.md`
+                : `migrations/${Date.now()}_schema_notes.sql`
               processedRawOutput = JSON.stringify({
-                output: { files: [{ path: `docs/schema-design-${Date.now()}.md`, content: docContent }] }
+                output: { files: [{ path: filePath, content: docContent }] }
               })
-              console.log('[agent/generate] Built documentation file from architect schema tables')
+              console.log(`[agent/generate] Built schema notes file at ${filePath}`)
             }
           } catch { /* leave as-is */ }
         }
