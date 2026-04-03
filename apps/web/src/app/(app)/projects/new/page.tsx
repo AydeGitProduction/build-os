@@ -10,13 +10,14 @@ import Input, { Textarea, Select } from '@/components/ui/Input'
 import { ArrowLeft, Zap } from 'lucide-react'
 
 const PROJECT_TYPES = [
-  { value: 'saas',        label: 'SaaS Product — Subscription-based web application' },
-  { value: 'ai_app',      label: 'AI Application — LLM-powered intelligent system' },
-  { value: 'marketplace', label: 'Marketplace — Two-sided platform connecting buyers and sellers' },
-  { value: 'crm',         label: 'CRM — Customer relationship management tool' },
-  { value: 'tool',        label: 'Productivity Tool — Developer/team productivity software' },
-  { value: 'api',         label: 'API Product — Developer-facing API or SDK' },
-  { value: 'other',       label: 'Other — Custom project type' },
+  { value: 'saas',          label: 'SaaS Product — Subscription-based web application' },
+  { value: 'ai_newsletter', label: 'AI Newsletter Platform — Email campaigns & subscriber management' },
+  { value: 'ai_app',        label: 'AI Application — LLM-powered intelligent system' },
+  { value: 'marketplace',   label: 'Marketplace — Two-sided platform connecting buyers and sellers' },
+  { value: 'crm',           label: 'CRM — Customer relationship management tool' },
+  { value: 'tool',          label: 'Productivity Tool — Developer/team productivity software' },
+  { value: 'api',           label: 'API Product — Developer-facing API or SDK' },
+  { value: 'other',         label: 'Other — Custom project type' },
 ]
 
 interface Workspace {
