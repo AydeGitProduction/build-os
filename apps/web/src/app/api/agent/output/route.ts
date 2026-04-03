@@ -37,6 +37,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { createAdminSupabaseClient } from '@/lib/supabase/server'
 import {
   checkIdempotency,
@@ -533,22 +534,26 @@ export async function POST(request: NextRequest) {
       const CODE_TASK_TYPES = ['code', 'schema', 'test']
       if (agentOutput?.id && CODE_TASK_TYPES.includes(task.task_type || '')) {
         const rawOutputText = agentOutput.raw_text || (output ? JSON.stringify(output) : '')
-        fetch(`${baseUrl}/api/agent/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Buildos-Secret': BUILDOS_SECRET,
-          },
-          body: JSON.stringify({
-            project_id: task.project_id,
-            task_id,
-            agent_output_id: agentOutput.id,
-            agent_role: agent_role || task.agent_role,
-            raw_output: rawOutputText,
-          }),
-        }).catch((err) => {
-          console.warn(`[agent/output] generate call failed for task ${task_id} (non-fatal):`, err)
-        })
+        // Use waitUntil so Vercel keeps the serverless function alive until the
+        // generate call completes — prevents fire-and-forget from being cut short.
+        waitUntil(
+          fetch(`${baseUrl}/api/agent/generate`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Buildos-Secret': BUILDOS_SECRET,
+            },
+            body: JSON.stringify({
+              project_id: task.project_id,
+              task_id,
+              agent_output_id: agentOutput.id,
+              agent_role: agent_role || task.agent_role,
+              raw_output: rawOutputText,
+            }),
+          }).catch((err) => {
+            console.warn(`[agent/output] generate call failed for task ${task_id} (non-fatal):`, err)
+          })
+        )
         console.log(`[agent/output] Code generation triggered for task ${task_id} (type: ${task.task_type})`)
       }
     }
