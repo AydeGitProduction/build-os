@@ -169,9 +169,78 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Step 1b: Pre-process raw_output — unwrap legacy n8n structured schema format.
+  // Some tasks dispatched via the old n8n path return:
+  //   { tables: [{ description: "```json\n{output:{files:[...]}}\n```" }], migration_sql: "..." }
+  // The parser can't handle this because (a) files live in tables[0].description and
+  // (b) the description is often truncated. We try to recover by:
+  //   1. Extracting a partial JSON block from tables[0].description and appending "}}" to close it
+  //   2. Falling back to building a synthetic output from migration_sql / typescript_types fields
+  let processedRawOutput = raw_output
+  try {
+    const outerParsed = JSON.parse(raw_output)
+    if (
+      outerParsed &&
+      typeof outerParsed === 'object' &&
+      !Array.isArray(outerParsed) &&
+      Array.isArray(outerParsed.tables)
+    ) {
+      const desc: string = outerParsed.tables[0]?.description ?? ''
+      // desc starts with ```json\n{...} — may be truncated (no closing ```)
+      // Try to extract the inner JSON
+      const jsonStartIdx = desc.indexOf('\n{')
+      if (jsonStartIdx !== -1) {
+        let jsonStr = desc.slice(jsonStartIdx).trim()
+        // Try to parse as-is; if it fails, try appending closing braces
+        let innerParsed: Record<string, unknown> | null = null
+        for (const suffix of ['', '}}', '}}}', '}}}}']) {
+          try {
+            innerParsed = JSON.parse(jsonStr + suffix)
+            break
+          } catch { /* try next */ }
+        }
+        if (innerParsed && innerParsed.output) {
+          // Successful inner parse — use this as the raw output
+          processedRawOutput = JSON.stringify(innerParsed)
+          console.log('[agent/generate] Unwrapped n8n schema format from tables[0].description')
+        }
+      }
+      // If we still have the outer format and there's a migration_sql field, synthesize output
+      if (processedRawOutput === raw_output) {
+        const migrationSql: string = outerParsed.migration_sql ?? ''
+        const tsTypes: string = outerParsed.typescript_types ?? ''
+        // Skip mock/placeholder content
+        const isMock = migrationSql.includes('MOCK') || migrationSql.includes('Set ANTHROPIC_API_KEY')
+        if (!isMock) {
+          const syntheticFiles: Array<{ path: string; content: string }> = []
+          if (migrationSql.trim()) {
+            syntheticFiles.push({
+              path: `migrations/${Date.now()}_schema.sql`,
+              content: migrationSql,
+            })
+          }
+          if (tsTypes.trim()) {
+            syntheticFiles.push({
+              path: `src/types/schema.ts`,
+              content: tsTypes,
+            })
+          }
+          if (syntheticFiles.length > 0) {
+            processedRawOutput = JSON.stringify({ output: { files: syntheticFiles } })
+            console.log('[agent/generate] Built synthetic output from migration_sql/typescript_types fields')
+          }
+        } else {
+          console.warn('[agent/generate] n8n schema output contains MOCK data — skipping (ANTHROPIC_API_KEY not set during agent run)')
+        }
+      }
+    }
+  } catch {
+    // Not JSON or unrecognised shape — leave processedRawOutput as raw_output
+  }
+
   // Step 2: Parse agent output → PatchOperations
   const generationResult = parseAgentOutputToOperations({
-    rawAgentOutput: raw_output,
+    rawAgentOutput: processedRawOutput,
     agentRole: agent_role,
     taskId: task_id,
     existingFilePaths: resolvedExistingPaths,
