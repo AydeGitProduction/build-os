@@ -824,11 +824,14 @@ async function callAnthropicWithRetry(
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
 
-    // PATCH 2026-03-29: Reduced from 240s to 90s.
-    // With 3 retry attempts + 6s delays + 90s per attempt = max 276s total.
-    // This guarantees the error callback (postToAgentOutput) fires before Vercel
-    // kills the function at 300s. Previously tasks that hit rate limits on all 3
-    // retries would exceed 300s + never call the callback, leaving task_runs in 'started'.
+    // PATCH 2026-04-03: Increased from 90s to 160s.
+    // With PX-1 platform context injection + maxTokens=16384, large code-gen tasks
+    // (e.g. Settings & Profile) consistently exceed the 90s limit. 160s allows the
+    // Anthropic API enough time to generate full route files.
+    // Safety: AbortSignal timeout throws DOMException → caught by outer try/catch
+    // → failure callback fires (45s) → total max = 160 + 45 = 205s, well within
+    // Vercel's 300s maxDuration. 429-retry path is unaffected (retries fire
+    // immediately on 429, not on timeout).
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -837,7 +840,7 @@ async function callAnthropicWithRetry(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(160_000),
     })
 
     if (res.status !== 429) {
