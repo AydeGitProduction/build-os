@@ -604,6 +604,10 @@ function buildUserMessage(ctx: TaskContext, roleConfig: RoleConfig): string {
     if (payload.source) lines.push(`- Source: ${payload.source}`)
     if (payload.epic_title) lines.push(`- Epic: ${payload.epic_title}`)
     if (payload.feature_title) lines.push(`- Feature: ${payload.feature_title}`)
+    if (payload.objective) lines.push(`- Objective: ${payload.objective}`)
+    // KEY FIX: inject key_tables hint so agents use correct table names (prevents hallucination)
+    if (payload.key_tables) lines.push(`- KEY DB TABLES TO USE (MANDATORY — do NOT invent others): ${payload.key_tables}`)
+    if (payload.phase) lines.push(`- Phase: ${payload.phase}`)
     lines.push('')
   }
 
