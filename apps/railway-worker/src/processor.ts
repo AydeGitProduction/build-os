@@ -47,16 +47,17 @@ project_environments, project_files, project_integrations, project_members,
 project_settings, project_tech_stack_items, projects, qa_results,
 qa_verdicts, questionnaires, recommendation_items, recommendation_reports,
 reconciliation_events, release_gate_checks, release_readiness,
-resource_locks, retry_logs, schema_registry, settings_changes,
+resource_locks, retry_logs, settings_changes,
 shadow_results, state_ownership_registry, system_incidents,
 task_delivery_gates, task_dependencies, task_events, task_runs, tasks,
 users, worker_heartbeats, workspace_members, workspaces
 
-FORBIDDEN (do NOT reference — these tables do NOT exist):
+FORBIDDEN (do NOT reference — these tables do NOT exist in the database):
 distributed_locks, activity_log, ai_usage, sessions, user_sessions,
 refresh_tokens, verification_tokens, accounts, profiles, roles,
 permissions, subscriptions, payments, invoices, notifications,
-messages, conversations, channels, members, teams
+messages, conversations, channels, members, teams,
+schema_registry, oauth_connections, generation_tasks, generation_runs
 `.trim()
 
 // ── Role configs ──────────────────────────────────────────────────────────────
