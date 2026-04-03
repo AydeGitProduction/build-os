@@ -1015,11 +1015,38 @@ ${pCtx.schemaHint}`
     let parseSuccess = true
 
     try {
-      const jsonMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```/) ||
-                        rawContent.match(/```\s*([\s\S]*?)\s*```/) ||
-                        rawContent.match(/(\{[\s\S]*\})/)
-      const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : rawContent
-      parsed = JSON.parse(jsonStr.trim())
+      // PATCH 2026-04-03: Smart outer-fence stripping.
+      // Problem: lazy regex /```json([\s\S]*?)```/ stops at the FIRST ``` it finds,
+      // which may be inside a "content" string field (TypeScript code fence embedded
+      // in JSON). This truncates the JSON and causes JSON.parse to fail, triggering
+      // the stub fallback even when the agent produced a well-formed JSON response.
+      //
+      // Fix: strip ONLY the outermost fence (if rawContent is entirely wrapped in one),
+      // then parse what remains. JSON.parse handles internal backticks fine since
+      // they are properly escaped in JSON strings.
+      let contentToParse = rawContent.trim()
+
+      // Case 1: Entire response is wrapped in ```json ... ``` or ``` ... ```
+      // Strip the outer fence so JSON.parse sees raw JSON.
+      const outerFenceMatch = contentToParse.match(/^```(?:json)?\s*([\s\S]*)\s*```\s*$/s)
+      if (outerFenceMatch) {
+        contentToParse = outerFenceMatch[1].trim()
+      }
+
+      // Case 2: Already bare JSON or stripped — try direct parse
+      // Case 3: JSON is somewhere in the middle with leading/trailing prose
+      //         Find the first { and last } as last resort
+      try {
+        parsed = JSON.parse(contentToParse)
+      } catch {
+        // Find the outermost JSON object (last resort for responses with prose preamble)
+        const innerJsonMatch = contentToParse.match(/(\{[\s\S]*\})\s*$/)
+        if (innerJsonMatch) {
+          parsed = JSON.parse(innerJsonMatch[1])
+        } else {
+          throw new Error('No JSON object found in response')
+        }
+      }
     } catch {
       parseSuccess = false
       console.warn(`[agent/execute] JSON parse failed, wrapping raw content as ${roleConfig.outputType}`)
