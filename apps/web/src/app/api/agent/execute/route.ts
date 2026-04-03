@@ -50,6 +50,10 @@ interface TaskContext {
   feature_title?: string
   feature_description?: string
   acceptance_criteria?: string[]
+  // Retry feedback (QA failure context from previous attempt)
+  retry_count?: number
+  failure_detail?: string | null
+  failure_suggestion?: string | null
   epic_title?: string
   epic_description?: string
   completed_dependencies?: Array<{
@@ -508,6 +512,21 @@ async function loadTaskContext(payload: TaskContext): Promise<TaskContext> {
       }
     }
 
+    // 1b. Load retry feedback (failure_detail + failure_suggestion from previous QA fail)
+    // This lets the agent see exactly what went wrong on the last attempt and self-correct.
+    {
+      const { data: taskMeta } = await admin
+        .from('tasks')
+        .select('retry_count, failure_detail, failure_suggestion')
+        .eq('id', payload.task_id)
+        .single()
+      if (taskMeta) {
+        payload.retry_count = taskMeta.retry_count ?? 0
+        payload.failure_detail = taskMeta.failure_detail ?? null
+        payload.failure_suggestion = taskMeta.failure_suggestion ?? null
+      }
+    }
+
     // 2. Load completed dependency outputs (for context awareness)
     const { data: deps } = await admin
       .from('task_dependencies')
@@ -628,6 +647,27 @@ function buildUserMessage(ctx: TaskContext, roleConfig: RoleConfig): string {
   lines.push('- Stack: Next.js 14 App Router + TypeScript + Supabase + Vercel')
   lines.push('- This is a self-building platform — outputs will be used to build the platform itself')
   lines.push('')
+
+  // ── Retry feedback: inject QA failure context so agent can self-correct ──────
+  // If this is a retry (retry_count > 0), show what failed last time.
+  // This is the single most important hint for fixing recurring QA failures.
+  if (ctx.retry_count && ctx.retry_count > 0) {
+    lines.push('## ⚠️ RETRY — Previous Attempt Failed')
+    lines.push(`This is attempt ${ctx.retry_count + 1}. The previous attempt was rejected by QA.`)
+    if (ctx.failure_detail) {
+      lines.push('')
+      lines.push('**QA Failure reason (you MUST fix this):**')
+      lines.push(String(ctx.failure_detail).slice(0, 600))
+    }
+    if (ctx.failure_suggestion) {
+      lines.push('')
+      lines.push('**Suggested fix:**')
+      lines.push(String(ctx.failure_suggestion).slice(0, 300))
+    }
+    lines.push('')
+    lines.push('Fix the identified issue. Do NOT repeat the same mistake.')
+    lines.push('')
+  }
 
   // Output instructions
   lines.push('## Required Output Format')
