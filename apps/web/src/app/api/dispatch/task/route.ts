@@ -104,6 +104,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
 
+    // ── 2b. WS2 — CONTEXT VALIDATION GATE ────────────────────────────────────
+    // Every code/schema/test task MUST have a non-empty context_payload.
+    // Empty context → agent produces G10 empty output → wastes a Railway run.
+    // Reject at dispatch time: immediately fail with clear failure_detail.
+    const CODE_TASK_TYPES_CTX = ['code', 'schema', 'test']
+    if (CODE_TASK_TYPES_CTX.includes(task.task_type ?? '')) {
+      const cp = task.context_payload as Record<string, unknown> | null
+      const isEmpty = !cp || Object.keys(cp).length === 0
+      if (isEmpty) {
+        const ctxErrMsg = `WS2 CONTEXT GATE: Task "${task.title}" has empty context_payload. ` +
+          `Code tasks require: project type, feature description, expected output, dependencies. ` +
+          `Populate context_payload before dispatching.`
+        console.warn(`[dispatch/task] ${ctxErrMsg} task=${task.id}`)
+
+        // Mark task as blocked with failure_detail — don't leave it in ready limbo
+        await admin
+          .from('tasks')
+          .update({
+            status: 'blocked',
+            failure_detail: ctxErrMsg,
+          })
+          .eq('id', task.id)
+
+        // Create blocker record (WS4 invariant: every blocked must have a blocker)
+        try {
+          await admin.from('blockers').insert({
+            project_id: task.project_id,
+            task_id: task.id,
+            blocker_type: 'technical',
+            severity: 'high',
+            description: ctxErrMsg.slice(0, 1000),
+            status: 'open',
+          })
+        } catch { /* non-fatal */ }
+
+        await completeIdempotency(admin, idempotencyKey, operation, { error: ctxErrMsg }, false)
+        return NextResponse.json({ error: ctxErrMsg }, { status: 422 })
+      }
+    }
+
     // ── 3. Validate state transition ─────────────────────────────────────────
     if (!isValidTransition(task.status, 'dispatched')) {
       const errMsg = `Cannot dispatch task in status "${task.status}". Task must be "ready".`

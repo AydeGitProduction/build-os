@@ -258,8 +258,31 @@ export async function POST(request: NextRequest) {
           status: newTaskStatus,
           actual_cost_usd: cost_usd || null,
           completed_at: success ? new Date().toISOString() : null,
+          // WS4: record failure detail so phantom-block detector can classify it
+          failure_detail: !success ? (error_message || 'Agent returned failure') : null,
         })
         .eq('id', task_id)
+
+      // WS4 — STATE MACHINE REPAIR: every blocked transition MUST have a blocker record.
+      // Previously tasks could enter status=blocked with 0 rows in the blockers table
+      // (phantom block). This guard ensures every block is traceable.
+      if (newTaskStatus === 'blocked' && !success) {
+        const blockerDescription = error_message || 'Agent execution failed — no output produced'
+        try {
+          await admin.from('blockers').insert({
+            project_id: task.project_id,
+            task_id,
+            blocker_type: 'technical',
+            severity: 'high',
+            description: blockerDescription.slice(0, 1000),
+            status: 'open',
+          })
+          console.log(`[agent/output] WS4: blocker record created for task ${task_id}`)
+        } catch (blockerErr) {
+          // Non-fatal but logged — a missing blocker is recoverable via the consistency validator
+          console.warn(`[agent/output] WS4: failed to create blocker for task ${task_id}:`, blockerErr)
+        }
+      }
     }
 
     // The effective new status (for downstream steps and audit log)

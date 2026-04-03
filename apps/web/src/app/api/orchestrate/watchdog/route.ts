@@ -146,7 +146,71 @@ export async function POST(request: NextRequest) {
       result.locks_cleared = ids.length
     }
 
-    // ── 5. Run task-splitting / timeout recovery scan ─────────────────────────
+    // ── 5. WS4 PHANTOM BLOCK DETECTOR ────────────────────────────────────────
+    // Detects tasks in status=blocked with no entry in the blockers table AND
+    // no failure_detail recorded. These are "phantom blocks" — the task is stuck
+    // with no traceable reason. Auto-fix: create a blocker record so the task
+    // can be triaged, or reset to ready if the block is clearly stale (>1h old).
+    let phantomBlocksFixed = 0
+    try {
+      const { data: blockedTasks, error: phantomErr } = await admin
+        .from('tasks')
+        .select('id, project_id, title, updated_at, failure_detail')
+        .eq('status', 'blocked')
+        .limit(50)
+
+      if (!phantomErr && blockedTasks && blockedTasks.length > 0) {
+        for (const blockedTask of blockedTasks) {
+          // Check if this task has a blocker record
+          const { data: existingBlockers } = await admin
+            .from('blockers')
+            .select('id')
+            .eq('task_id', blockedTask.id)
+            .eq('status', 'open')
+            .limit(1)
+
+          const hasBlocker = existingBlockers && existingBlockers.length > 0
+          const hasFailureDetail = !!blockedTask.failure_detail
+
+          if (!hasBlocker && !hasFailureDetail) {
+            // TRUE PHANTOM BLOCK: blocked with no record at all
+            const phantomAge = now.getTime() - new Date(blockedTask.updated_at).getTime()
+            const phantomAgeMinutes = Math.floor(phantomAge / 60_000)
+
+            if (phantomAgeMinutes > 60) {
+              // Stale phantom (>1h): auto-reset to ready so it can be retried
+              await admin
+                .from('tasks')
+                .update({ status: 'ready', failure_detail: null })
+                .eq('id', blockedTask.id)
+              console.log(`[watchdog] WS4: reset phantom block task ${blockedTask.id} (${phantomAgeMinutes}m old)`)
+            } else {
+              // Fresh phantom: create a blocker record to make it traceable
+              await admin.from('blockers').insert({
+                project_id: blockedTask.project_id,
+                task_id: blockedTask.id,
+                blocker_type: 'technical',
+                severity: 'medium',
+                description: `WS4 Phantom Block Detected: task entered blocked state with no failure record. ` +
+                  `Watchdog created this blocker for traceability. Manual review required.`,
+                status: 'open',
+              })
+              console.log(`[watchdog] WS4: created blocker for phantom-blocked task ${blockedTask.id}`)
+            }
+            phantomBlocksFixed++
+
+            // Add to projects_ticked for orchestration tick
+            if (blockedTask.project_id && !result.projects_ticked.includes(blockedTask.project_id)) {
+              result.projects_ticked.push(blockedTask.project_id)
+            }
+          }
+        }
+      }
+    } catch (phantomScanErr: any) {
+      result.errors.push(`phantom-block scan: ${phantomScanErr.message}`)
+    }
+
+    // ── 6. Run task-splitting / timeout recovery scan ─────────────────────────
     const recoveryResults: Record<string, any> = {}
     const uniqueProjects = [...new Set([
       ...result.projects_ticked,
@@ -209,8 +273,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       data: {
         ...result,
+        phantom_blocks_fixed: phantomBlocksFixed,
         recovery: recoveryResults,
-        summary: `Watchdog: reset ${result.dispatched_reset} dispatched + ${result.in_progress_reset} in_progress tasks, cleared ${result.locks_cleared} locks, recovered ${totalRecovered} failed tasks, ticked ${result.projects_ticked.length} projects`,
+        summary: `Watchdog: reset ${result.dispatched_reset} dispatched + ${result.in_progress_reset} in_progress tasks, cleared ${result.locks_cleared} locks, fixed ${phantomBlocksFixed} phantom blocks, recovered ${totalRecovered} failed tasks, ticked ${result.projects_ticked.length} projects`,
       }
     })
 
@@ -232,7 +297,7 @@ export async function GET() {
         in_progress_stale_minutes: IN_PROGRESS_STALE_MINUTES,
         run_stale_minutes:         RUN_STALE_MINUTES,
       },
-      description: 'Global watchdog — detects stuck tasks, runs recovery scan (split/reroute/escalate), clears expired locks, fires ticks',
+      description: 'Global watchdog — detects stuck tasks, phantom blocks (WS4), runs recovery scan (split/reroute/escalate), clears expired locks, fires ticks',
       recovery_strategies: ['retry_same', 'reroute_worker', 'reduce_scope', 'split_task', 'escalate_manual'],
     }
   })
