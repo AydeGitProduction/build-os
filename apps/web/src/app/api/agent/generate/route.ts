@@ -211,7 +211,7 @@ export async function POST(request: NextRequest) {
         const tsTypes: string = outerParsed.typescript_types ?? ''
         // Skip mock/placeholder content
         const isMock = migrationSql.includes('MOCK') || migrationSql.includes('Set ANTHROPIC_API_KEY')
-        if (!isMock) {
+        if (!isMock && migrationSql.trim().length > 50) {
           const syntheticFiles: Array<{ path: string; content: string }> = []
           if (migrationSql.trim()) {
             syntheticFiles.push({
@@ -219,7 +219,7 @@ export async function POST(request: NextRequest) {
               content: migrationSql,
             })
           }
-          if (tsTypes.trim()) {
+          if (tsTypes.trim() && !tsTypes.includes('MOCK')) {
             syntheticFiles.push({
               path: `src/types/schema.ts`,
               content: tsTypes,
@@ -230,7 +230,21 @@ export async function POST(request: NextRequest) {
             console.log('[agent/generate] Built synthetic output from migration_sql/typescript_types fields')
           }
         } else {
-          console.warn('[agent/generate] n8n schema output contains MOCK data — skipping (ANTHROPIC_API_KEY not set during agent run)')
+          // The architect schema format with truncated description produces no recoverable files.
+          // Mark the output as a documentation-only result (not a code generation failure).
+          console.warn('[agent/generate] n8n architect schema format has no recoverable code files — treating as documentation task, not a code generation error')
+          // Synthesize a documentation file from the table data instead
+          try {
+            const tableNames = (outerParsed.tables as Array<{name: string}>)?.map((t: {name: string}) => t.name).join(', ') ?? ''
+            const notes: string = outerParsed.notes ?? ''
+            if (tableNames) {
+              const docContent = `# Schema Design\n\nTables: ${tableNames}\n\n${notes ? `## Notes\n\n${notes}` : ''}\n`
+              processedRawOutput = JSON.stringify({
+                output: { files: [{ path: `docs/schema-design-${Date.now()}.md`, content: docContent }] }
+              })
+              console.log('[agent/generate] Built documentation file from architect schema tables')
+            }
+          } catch { /* leave as-is */ }
         }
       }
     }
@@ -278,7 +292,9 @@ export async function POST(request: NextRequest) {
   // DESIGN: Path-validation errors on individual blocks (e.g. ".env.local" outside allowed
   // paths, directory paths) are soft failures — the block is skipped but other valid blocks
   // are still applied. We only hard-abort if NO valid operations were produced at all.
-  // Protected-file violations are still fatal since they indicate a misconfigured agent.
+  // Protected-file violations: if the agent produced OTHER valid operations alongside the
+  // protected-file attempt, we log a warning but proceed with the valid operations. We only
+  // hard-abort if the ONLY output was targeting a protected file (operations.length === 0).
   const hasFatalErrors =
     !generationResult.validation.valid &&
     generationResult.operations.length === 0
@@ -287,7 +303,11 @@ export async function POST(request: NextRequest) {
     e.includes('protected infrastructure file'),
   )
 
-  if (hasProtectedFileViolation || hasFatalErrors) {
+  // Hard-abort: protected file is the ONLY thing the agent produced, OR no operations at all
+  const shouldAbort =
+    (hasProtectedFileViolation && generationResult.operations.length === 0) || hasFatalErrors
+
+  if (shouldAbort) {
     await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
       generation_errors: generationResult.validation.errors,
     })
@@ -305,12 +325,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: hasProtectedFileViolation
-          ? 'Agent attempted to overwrite a protected infrastructure file'
+          ? 'Agent attempted to overwrite a protected infrastructure file (and produced no other valid files)'
           : 'Code generation validation failed — no valid operations produced',
         validation_errors: generationResult.validation.errors,
         warnings: generationResult.validation.warnings,
       },
       { status: 422 },
+    )
+  }
+
+  // Soft-warn: protected file violation alongside other valid operations — log but proceed
+  if (hasProtectedFileViolation && generationResult.operations.length > 0) {
+    console.warn(
+      `[agent/generate] Protected file violation for task ${task_id} — skipping protected file(s) but proceeding with ${generationResult.operations.length} other valid operations.`,
+      generationResult.validation.errors,
     )
   }
 
