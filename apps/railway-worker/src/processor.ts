@@ -183,8 +183,8 @@ function getRoleConfig(
   }
 
   const maxTokensByRole: Record<string, number> = {
-    architect: 8192, backend_engineer: 8192, frontend_engineer: 8192,
-    qa_security_auditor: 1024, integration_engineer: 8192,
+    architect: 12288, backend_engineer: 16384, frontend_engineer: 16384,
+    qa_security_auditor: 1024, integration_engineer: 16384,
     documentation_engineer: 6144, product_analyst: 6144,
     automation_engineer: 6144, cost_analyst: 4096,
     release_manager: 4096, recommendation_analyst: 4096,
