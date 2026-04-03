@@ -198,6 +198,32 @@ export async function POST(request: NextRequest) {
       ? await escalateToIncident(admin, evalInput, result)
       : null
 
+    // ── FIX: Submit verdict to /api/qa/verdict to trigger task status transition ──
+    // Without this, n8n QA cron creates qa_results but never transitions the task
+    // out of "awaiting_review" — causing a runaway loop of repeated QA evaluations.
+    // The verdict route handles retry counting, failed/ready transitions, and audit.
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://web-lake-one-88.vercel.app'
+      const internalSecret = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || ''
+      const verdictForSubmission = result.verdict === 'RETRY_REQUIRED' ? 'fail' : result.verdict.toLowerCase()
+      await fetch(`${baseUrl}/api/qa/verdict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Buildos-Secret': internalSecret },
+        body: JSON.stringify({
+          task_id,
+          verdict: verdictForSubmission,
+          score: result.score,
+          agent_output_id: null,
+          agent_role: (agent_role as string) || 'qa_security_auditor',
+          idempotency_key: `governance-qa:${task_id}:${qa_result_id}`,
+          issues: result.verdict !== 'PASS' ? [result.notes] : [],
+          suggestions: result.suggestion_for_task ? [result.suggestion_for_task] : [],
+        }),
+      })
+    } catch (verdictErr) {
+      console.warn('[governance/qa-results] Verdict submission failed (non-fatal):', verdictErr)
+    }
+
     return NextResponse.json({
       data: {
         id: qa_result_id,

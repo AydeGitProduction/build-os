@@ -939,7 +939,7 @@ ${pCtx.schemaHint}`
 
         const LANG_LOCK = `LANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, C#, Ruby, or any other language. Any non-TypeScript/SQL output will be automatically rejected.`
 
-        const STACK_LOCK = `STACK LOCK (MANDATORY): FORBIDDEN packages: prisma, @prisma/client, next-auth, auth.js, drizzle-orm. REQUIRED patterns: For server-side DB use createAdminSupabaseClient() from @/lib/supabase/server. For auth use supabase.auth.getUser(). NEVER use deprecated auth-helpers packages.`
+        const STACK_LOCK = `STACK LOCK (MANDATORY): FORBIDDEN packages (QA WILL AUTO-FAIL): prisma, @prisma/client, next-auth, auth.js, drizzle-orm, @supabase/auth-helpers-nextjs, @supabase/auth-helpers-react, createClientComponentClient, createServerComponentClient. REQUIRED patterns: Client-side Supabase: use createBrowserClient from @supabase/ssr. Server-side DB: use createAdminSupabaseClient() from @/lib/supabase/server. For auth: use supabase.auth.getUser() with @supabase/ssr clients ONLY.`
 
         const platformSystemPrompts: Partial<Record<string, string>> = {
           backend_engineer:     `You are a senior backend engineer building the ${pCtx.name}. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANG_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`,
