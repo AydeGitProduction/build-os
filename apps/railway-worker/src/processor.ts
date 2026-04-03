@@ -57,7 +57,7 @@ distributed_locks, activity_log, ai_usage, sessions, user_sessions,
 refresh_tokens, verification_tokens, accounts, profiles, roles,
 permissions, subscriptions, payments, invoices, notifications,
 messages, conversations, channels, members, teams,
-schema_registry, oauth_connections, generation_tasks, generation_runs,
+schema_registry, oauth_connections, generation_tasks, generation_runs, generation_jobs,
 _migrations_noop, _schema_migrations, schema_migrations, _migrations, migration_log,
 idempotency_records, migration_records, applied_migrations, migration_history,
 agent_runs, execution_history, run_history, api_logs, request_logs
