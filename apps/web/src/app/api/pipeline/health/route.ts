@@ -81,10 +81,12 @@ export async function GET(request: NextRequest) {
     }> = []
 
     if (taskIds.length > 0) {
+      // IDs may be short prefixes (8 chars) — use OR with ilike to match UUID prefix
+      const orFilter = taskIds.map(id => `id.ilike.${id}%`).join(',')
       const { data: specificTasks } = await admin
         .from('tasks')
         .select('id, title, status, failure_detail, retry_count, updated_at')
-        .in('id', taskIds)
+        .or(orFilter)
         .order('updated_at', { ascending: false })
 
       taskDetails = (specificTasks ?? []).map(t => ({
