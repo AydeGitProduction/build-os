@@ -3,22 +3,26 @@
  *
  * Public monitoring endpoint — no auth required.
  * Returns aggregate task pipeline counts and system health indicators.
- * Does NOT expose task details, project names, or user data.
+ *
+ * Query params:
+ *   ?task_ids=id1,id2,id3  — also return status for specific task IDs
  *
  * Used by: supervisor monitoring, health checks, CI dashboards
  */
 
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createAdminSupabaseClient } from '@/lib/supabase/server'
 
-// Cache for 30 seconds to avoid hammering the DB on repeated health checks
-const CACHE_TTL_SECONDS = 30
-
-export const revalidate = CACHE_TTL_SECONDS
-
-export async function GET() {
+export async function GET(request: NextRequest) {
   const admin = createAdminSupabaseClient()
   const checkedAt = new Date().toISOString()
+
+  // Parse optional task_ids query parameter
+  const { searchParams } = new URL(request.url)
+  const taskIdsParam = searchParams.get('task_ids')
+  const taskIds = taskIdsParam
+    ? taskIdsParam.split(',').map(id => id.trim()).filter(Boolean)
+    : []
 
   try {
     // Aggregate task counts by status
@@ -66,21 +70,50 @@ export async function GET() {
       (dlqCount ?? 0) === 0 &&
       recentActivity > 0
 
-    return NextResponse.json({
-      data: {
-        checked_at:      checkedAt,
-        healthy,
-        task_counts:     counts,
-        total_tasks:     total,
-        recent_runs_30m: recentActivity,
-        dlq_size:        dlqCount ?? 0,
-        open_blockers:   openBlockers ?? 0,
-        pipeline_status: healthy ? 'ACTIVE' : 'DEGRADED',
-        // Deployment version info
-        deployed_commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ?? 'unknown',
-        deployed_at:     process.env.VERCEL_GIT_COMMIT_MESSAGE ?? 'unknown',
-      },
-    })
+    // Specific task details if task_ids provided
+    let taskDetails: Array<{
+      id: string
+      title: string
+      status: string
+      failure_detail: string | null
+      retry_count: number
+      updated_at: string
+    }> = []
+
+    if (taskIds.length > 0) {
+      const { data: specificTasks } = await admin
+        .from('tasks')
+        .select('id, title, status, failure_detail, retry_count, updated_at')
+        .in('id', taskIds)
+        .order('updated_at', { ascending: false })
+
+      taskDetails = (specificTasks ?? []).map(t => ({
+        id:             t.id,
+        title:          t.title,
+        status:         t.status,
+        failure_detail: t.failure_detail ?? null,
+        retry_count:    t.retry_count ?? 0,
+        updated_at:     t.updated_at,
+      }))
+    }
+
+    const response: Record<string, unknown> = {
+      checked_at:      checkedAt,
+      healthy,
+      task_counts:     counts,
+      total_tasks:     total,
+      recent_runs_30m: recentActivity,
+      dlq_size:        dlqCount ?? 0,
+      open_blockers:   openBlockers ?? 0,
+      pipeline_status: healthy ? 'ACTIVE' : 'DEGRADED',
+      deployed_commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ?? 'unknown',
+    }
+
+    if (taskIds.length > 0) {
+      response['task_details'] = taskDetails
+    }
+
+    return NextResponse.json({ data: response })
   } catch (err: unknown) {
     return NextResponse.json(
       {
