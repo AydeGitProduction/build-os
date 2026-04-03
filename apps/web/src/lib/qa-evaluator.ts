@@ -173,6 +173,8 @@ export interface QAEvaluationInput {
   retry_count: number
   max_retries: number
   raw_output: string | null
+  // PX-2: Platform-specific allowed tables (extends KNOWN_BUILDOS_TABLES for non-saas projects)
+  platform_tables?: Set<string>
 }
 
 export interface QAEvaluationResult {
@@ -281,7 +283,11 @@ function extractTableReferences(output: string): string[] {
 
 // ── G10: Validate table references against known BuildOS schema ───────────────
 
-function checkSchemaReferences(output: string, description: string | null): {
+function checkSchemaReferences(
+  output: string,
+  description: string | null,
+  platformTables?: Set<string>,
+): {
   passed: boolean | null
   referenced_tables: string[]
   unknown_tables: string[]
@@ -299,7 +305,14 @@ function checkSchemaReferences(output: string, description: string | null): {
     }
   }
 
-  const unknown = referenced.filter(t => !KNOWN_BUILDOS_TABLES.has(t.toLowerCase()))
+  // PX-2: Merge platform-specific tables with the BuildOS core tables so that
+  // non-saas projects (ai_newsletter, marketplace, crm, …) don't get RULE-27
+  // false-positives for their own domain tables (subscribers, campaigns, etc.)
+  const allowedTables = platformTables
+    ? new Set([...KNOWN_BUILDOS_TABLES, ...platformTables])
+    : KNOWN_BUILDOS_TABLES
+
+  const unknown = referenced.filter(t => !allowedTables.has(t.toLowerCase()))
 
   if (unknown.length > 0) {
     return {
@@ -321,7 +334,7 @@ function checkSchemaReferences(output: string, description: string | null): {
 // ── G10: Main evaluator ───────────────────────────────────────────────────────
 
 export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
-  const { task_type, agent_role, title, description, raw_output, retry_count } = input
+  const { task_type, agent_role, title, description, raw_output, retry_count, platform_tables } = input
 
   // Determine task category
   const isCodeTask = CODE_TASK_TYPES.has(task_type) || CODE_AGENT_ROLES.has(agent_role)
@@ -513,7 +526,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
 
   const isSchemaRelevant = isCodeTask || task_type === 'schema' || task_type === 'migration'
   if (isSchemaRelevant) {
-    const schemaResult = checkSchemaReferences(output, description)
+    const schemaResult = checkSchemaReferences(output, description, platform_tables)
     schema_check_passed = schemaResult.passed
     evidence.schema_referenced_tables = schemaResult.referenced_tables
     evidence.schema_unknown_tables = schemaResult.unknown_tables

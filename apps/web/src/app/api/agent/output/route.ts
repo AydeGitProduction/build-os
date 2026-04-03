@@ -474,6 +474,30 @@ export async function POST(request: NextRequest) {
       const agentOutputId = agentOutput?.id || null
       try {
         const { runFullQAPipeline } = await import('@/lib/qa-evaluator')
+
+        // PX-2: Fetch project_type to inject platform-specific allowed tables into QA gate.
+        // This prevents RULE-27 false-positives for non-saas projects (e.g. ai_newsletter).
+        let platformTables: Set<string> | undefined
+        try {
+          if (task.project_id) {
+            const { data: projRec } = await admin
+              .from('projects')
+              .select('project_type')
+              .eq('id', task.project_id)
+              .maybeSingle()
+            if (projRec?.project_type && projRec.project_type !== 'saas') {
+              const { getPlatformTables } = await import('@/lib/platform-registry')
+              const tableSet = getPlatformTables(projRec.project_type)
+              if (tableSet.size > 0) {
+                platformTables = tableSet
+                console.log(`[agent/output] PX-2: injected ${tableSet.size} platform tables for QA gate (project_type=${projRec.project_type})`)
+              }
+            }
+          }
+        } catch (px2Err) {
+          console.warn('[agent/output] PX-2: platform table injection failed (non-fatal):', px2Err)
+        }
+
         const qaInput = {
           task_id,
           project_id: task.project_id as string | null,
@@ -484,6 +508,7 @@ export async function POST(request: NextRequest) {
           retry_count: task.retry_count || 0,
           max_retries: task.max_retries || 3,
           raw_output: (agentOutput as { raw_text?: string | null } | null)?.raw_text || (output ? JSON.stringify(output) : null),
+          platform_tables: platformTables,
         }
         const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
 

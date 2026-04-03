@@ -155,9 +155,28 @@ export async function POST(request: NextRequest) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const rt = resolvedTask as any
+    const resolvedProjectId = (project_id || rt?.project_id || null) as string | null
+
+    // PX-2: Fetch platform-specific allowed tables for non-saas projects
+    let platformTables: Set<string> | undefined
+    try {
+      if (resolvedProjectId) {
+        const { data: projRec } = await (admin as any)
+          .from('projects')
+          .select('project_type')
+          .eq('id', resolvedProjectId)
+          .maybeSingle()
+        if (projRec?.project_type && projRec.project_type !== 'saas') {
+          const { getPlatformTables } = await import('@/lib/platform-registry')
+          const tableSet = getPlatformTables(projRec.project_type)
+          if (tableSet.size > 0) platformTables = tableSet
+        }
+      }
+    } catch { /* non-fatal — falls back to BuildOS tables only */ }
+
     const evalInput = {
       task_id: task_id as string,
-      project_id: (project_id || rt?.project_id || null) as string | null,
+      project_id: resolvedProjectId,
       task_type: (task_type as string) || rt?.task_type || 'code',
       agent_role: (agent_role as string) || rt?.agent_role || 'backend_engineer',
       title: (task_title as string) || rt?.title || '',
@@ -165,6 +184,7 @@ export async function POST(request: NextRequest) {
       retry_count: (retry_count as number) || rt?.retry_count || 0,
       max_retries: (max_retries as number) || rt?.max_retries || 3,
       raw_output: resolvedRawOutput,
+      platform_tables: platformTables,
     }
 
     const result = evaluateQA(evalInput)

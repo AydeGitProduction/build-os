@@ -426,3 +426,42 @@ export function getPlatformContext(projectType: string | null | undefined): Plat
 export function listPlatformTypes(): string[] {
   return Object.keys(PLATFORM_REGISTRY)
 }
+
+/**
+ * PX-2: Returns a Set of known DB table names for a given project_type.
+ * Used by the QA gate (G10 RULE-27) to allow platform-specific tables
+ * in addition to the core BuildOS tables.
+ *
+ * Extracts table names by parsing the platform's schemaHint — specifically
+ * the comma-separated list that follows "Core tables:" (multi-line safe).
+ *
+ * Returns an empty Set for 'saas' projects (they use KNOWN_BUILDOS_TABLES only).
+ */
+export function getPlatformTables(projectType: string | null | undefined): Set<string> {
+  if (!projectType || projectType === 'saas') return new Set()
+  const ctx = PLATFORM_REGISTRY[projectType]
+  if (!ctx) return new Set()
+
+  const tableSet = new Set<string>()
+
+  // Extract from schemaHint: find "Core tables:" and capture all tokens until blank line
+  const coreTablesMatch = ctx.schemaHint.match(/Core tables:\s*([\s\S]*?)(?:\n\s*\n|$)/i)
+  if (coreTablesMatch) {
+    const tableBlock = coreTablesMatch[1]
+    // Split by commas and/or whitespace, filter to valid table name tokens
+    const tokens = tableBlock.split(/[\s,]+/)
+    for (const token of tokens) {
+      const clean = token.toLowerCase().replace(/[^a-z0-9_]/g, '')
+      if (clean.length >= 3) tableSet.add(clean)
+    }
+  }
+
+  // Also add entity names as likely table names (lowercase + pluralized)
+  for (const entity of ctx.entities) {
+    const lower = entity.toLowerCase().replace(/\s+/g, '_')
+    tableSet.add(lower)
+    tableSet.add(lower + 's')
+  }
+
+  return tableSet
+}
