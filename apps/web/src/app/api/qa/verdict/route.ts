@@ -131,12 +131,16 @@ export async function POST(request: NextRequest) {
     if (qvError) throw new Error(`Failed to write QA verdict: ${qvError.message}`)
 
     // ── Determine new task status ─────────────────────────────────────────────
+    // EXECUTION CONTRACT (Developer 2): QA PASS no longer sets 'completed' directly.
+    // Instead it sets 'pending_deploy' — the task only reaches 'completed' (VERIFIED_DONE)
+    // after /api/agent/generate confirms a real GitHub commit SHA + Vercel deploy.
+    // This enforces: agent → generate → commit → deploy → verify → COMPLETED.
     const passed = verdictNorm === 'PASS'
     const oldStatus = task.status
 
     let newStatus: string
     if (passed) {
-      newStatus = 'completed'
+      newStatus = 'pending_deploy'  // Awaiting commit proof — NOT yet completed
     } else {
       // On fail: check if max retries exceeded
       const newRetryCount = (task.retry_count || 0) + 1
@@ -162,9 +166,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Direct update always wins (ensures correct status regardless of RPC logic)
+    // completed_at is NOT set here — it is set by /api/agent/generate after commit proof.
+    // pending_deploy means QA passed but commit has not yet been verified.
     await admin.from('tasks').update({
       status: newStatus,
-      completed_at: passed ? new Date().toISOString() : null,
+      completed_at: null,  // Will be set by generate/route.ts after commit verification
     }).eq('id', task_id)
 
     // ── Fire orchestration tick on retry (re-queue needs a dispatch trigger) ──
@@ -182,6 +188,8 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Check if all tasks in feature are complete ────────────────────────────
+    // A feature is complete only when all tasks reach 'completed' (not 'pending_deploy').
+    // pending_deploy means QA passed but commit proof is still pending — not yet VERIFIED_DONE.
     if (passed && task.feature_id) {
       const { data: featureTasks } = await admin
         .from('tasks')

@@ -16,7 +16,6 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { waitUntil } from '@vercel/functions'
 import { createAdminSupabaseClient } from '@/lib/supabase/server'
 
 // Allow up to 300 seconds for long-running Anthropic API calls (Opus can take 2-3 min)
@@ -583,6 +582,22 @@ async function loadTaskContext(payload: TaskContext): Promise<TaskContext> {
 
 function buildUserMessage(ctx: TaskContext, roleConfig: RoleConfig): string {
   const lines: string[] = []
+
+  // ── SCHEMA CONTRACT (injected first — highest priority) ───────────────────
+  // If key_tables is present in context_payload, inject it at the absolute TOP
+  // of the prompt before any other content. This makes it impossible for the
+  // model to miss or deprioritise. QA will auto-FAIL any output that references
+  // a table not in this list (RULE-27). This is a HARD CONTRACT, not a hint.
+  const payload = ctx.context_payload as Record<string, unknown>
+  if (payload?.key_tables) {
+    lines.push('## ⛔ SCHEMA CONTRACT — READ BEFORE ANYTHING ELSE')
+    lines.push(`You MUST use ONLY these database tables: **${payload.key_tables}**`)
+    lines.push('Any other table name — including agent_runs, agent_jobs, oauth_connections, user_connections,')
+    lines.push('project_connections, integrations, migrations, generation_runs, or ANY invented name —')
+    lines.push('will cause IMMEDIATE QA REJECTION (RULE-27). There are NO exceptions.')
+    lines.push('If you are unsure which table to use, use the ones listed above. DO NOT invent new ones.')
+    lines.push('')
+  }
 
   // Task identity
   lines.push(`# Task: ${ctx.task_name}`)
@@ -1219,15 +1234,32 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // ── 3. Respond immediately — run AI execution via waitUntil ───────────────
-  // This prevents the 10s emitToN8n timeout from killing the AI call.
-  // Vercel's waitUntil keeps the function alive until the async work completes.
-  waitUntil(runAgentExecution(payload, BUILDOS_SECRET, ANTHROPIC_API_KEY))
+  // ── 3. Enforce context_payload for code/schema tasks ─────────────────────
+  // Code tasks without context_payload have no schema anchor → agents hallucinate.
+  // Block dispatch here rather than let QA fail it 10+ times.
+  const taskTypeRaw = payload.task_type as string | undefined
+  const isCodeTask = ['code', 'schema', 'test'].includes(taskTypeRaw || '')
+  const ctxPayload = payload.context_payload as Record<string, unknown> | undefined
+  const hasContext = ctxPayload && Object.keys(ctxPayload).length > 0
+  if (isCodeTask && !hasContext) {
+    console.warn(`[agent/execute] CONTEXT GATE: blocking dispatch for task=${task_id} — empty context_payload on ${taskTypeRaw} task`)
+    return NextResponse.json({
+      error: 'CONTEXT GATE: code/schema tasks require a populated context_payload (key_tables, objective, phase). Populate context_payload in the task row before dispatching.',
+      task_id,
+    }, { status: 422 })
+  }
+
+  // ── 4. Run execution synchronously (no waitUntil) ─────────────────────────
+  // waitUntil was removed: execution now runs synchronously and the caller
+  // receives the result only after the AI call completes and the output has
+  // been posted to /api/agent/output. This ensures the caller (n8n) knows
+  // the real terminal state before moving on.
+  await runAgentExecution(payload, BUILDOS_SECRET, ANTHROPIC_API_KEY)
 
   return NextResponse.json({
-    queued: true,
+    done: true,
     mode: ANTHROPIC_API_KEY ? 'anthropic' : 'mock',
     task_id,
-    message: 'Execution started asynchronously',
-  }, { status: 202 })
+    message: 'Execution completed synchronously',
+  }, { status: 200 })
 }

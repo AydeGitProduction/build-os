@@ -589,37 +589,27 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // ── G4 enforcement: block task if any file unverified ─────────────────
+        // ── G4 enforcement: block or complete task based on commit verification ──
+        // EXECUTION CONTRACT (Developer 2): This is the ONLY place that sets
+        // status = 'completed'. QA PASS sets 'pending_deploy'. We set 'completed'
+        // here only after commit_verified = true + Vercel deploy triggered.
+        // This enforces: agent → generate → commit → deploy → verify → COMPLETED.
         if (!allFilesVerified) {
           // WS2: mark generation as commit_failed (not files_written) — truth matters
           await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
             generation_errors: ['G4: commit_verified=false — files written locally but not confirmed in repo'],
           })
 
-          // WS3: Atomicity fix — only force 'blocked' if task is not already 'completed'
-          // QA verdict may have already set the task to 'completed' (fire-and-forget race).
-          // G4 must not override a QA-verified completed state.
-          const { data: currentState } = await adminForCommit
+          // Commit verification failed — block the task regardless of current status.
+          // pending_deploy → blocked (commit proof absent)
+          await adminForCommit
             .from('tasks')
-            .select('status')
+            .update({
+              status: 'blocked',
+              failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
+              failure_category: 'commit_delivery',
+            })
             .eq('id', task_id)
-            .single()
-
-          if (currentState?.status !== 'completed') {
-            await adminForCommit
-              .from('tasks')
-              .update({
-                status: 'blocked',
-                failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
-                failure_category: 'commit_delivery',
-              })
-              .eq('id', task_id)
-          } else {
-            console.warn(
-              `[agent/generate] G4: task ${task_id} already 'completed' by QA — not overriding with 'blocked'. ` +
-              `Files may not be in repo — manual verification required.`
-            )
-          }
 
           console.error(
             `[agent/generate] G4: task ${task_id} forced to 'blocked' — ` +
@@ -634,6 +624,25 @@ export async function POST(request: NextRequest) {
             deployError = deployResult.error ?? 'Unknown deploy error'
             console.warn('[agent/generate] Deploy hook skipped:', deployError)
           }
+
+          // ── VERIFIED_DONE: commit verified + deploy triggered → completed ──
+          // This is the ONLY path to 'completed'. Transition from 'pending_deploy'.
+          // If task is already 'completed' (legacy path), this is a no-op.
+          await adminForCommit
+            .from('tasks')
+            .update({
+              status: 'completed',
+              completed_at: new Date().toISOString(),
+              failure_detail: null,
+              failure_category: null,
+            })
+            .eq('id', task_id)
+            .in('status', ['pending_deploy', 'awaiting_review'])  // Only advance, never regress
+
+          console.log(
+            `[agent/generate] VERIFIED_DONE: task ${task_id} → completed ` +
+            `commit=${commitSha?.slice(0, 8)} deploy=${deployTriggered}`
+          )
         }
       } else {
         commitError = commitResult.error ?? 'Unknown commit error'

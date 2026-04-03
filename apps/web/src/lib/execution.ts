@@ -306,8 +306,9 @@ export const TASK_STATUS_TRANSITIONS: Record<string, string[]> = {
   ready:           ['dispatched', 'cancelled'],
   dispatched:      ['in_progress', 'awaiting_review', 'failed', 'blocked'],
   in_progress:     ['awaiting_review', 'blocked', 'failed'],
-  awaiting_review: ['in_qa', 'in_progress', 'blocked', 'ready'], // 'ready' allows QA-fail retry re-queue
-  in_qa:           ['completed', 'in_progress', 'blocked'],
+  awaiting_review: ['in_qa', 'in_progress', 'blocked', 'ready', 'pending_deploy'], // 'ready' allows QA-fail retry re-queue; 'pending_deploy' for QA PASS
+  in_qa:           ['pending_deploy', 'in_progress', 'blocked'], // QA PASS → pending_deploy (requires commit proof)
+  pending_deploy:  ['completed', 'blocked'], // commit verified → completed; commit failed → blocked
   blocked:         ['ready', 'cancelled'],
   failed:          ['ready', 'cancelled'],
   completed:       [],
