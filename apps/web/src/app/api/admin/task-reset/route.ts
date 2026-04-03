@@ -1,7 +1,7 @@
 /**
  * POST /api/admin/task-reset
  *
- * Supervisor-only admin endpoint: force-resets specific task IDs back to `ready`
+ * Supervisor-only admin endpoint: force-resets tasks back to `ready`
  * regardless of current state (bypasses state machine — admin privilege).
  *
  * Use case: tasks that are `completed` but produced no code output due to agent
@@ -12,9 +12,10 @@
  *
  * Body:
  *   {
- *     task_ids: string[],          // full UUIDs or 8-char prefixes
- *     clear_failure_detail?: bool, // default true
- *     reason?: string              // logged in failure_detail as context for agent
+ *     title_pattern: string,        // ilike pattern on task title (e.g. "[U1-B%")
+ *     statuses?: string[],          // only reset tasks in these statuses (default: all)
+ *     clear_failure_detail?: bool,  // default true
+ *     reason?: string               // context hint stored in failure_detail for agent
  *   }
  */
 
@@ -32,77 +33,76 @@ export async function POST(request: NextRequest) {
 
   const admin = createAdminSupabaseClient()
 
-  let body: { task_ids?: string[]; clear_failure_detail?: boolean; reason?: string }
+  let body: {
+    title_pattern?: string
+    statuses?: string[]
+    clear_failure_detail?: boolean
+    reason?: string
+  }
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { task_ids, clear_failure_detail = true, reason } = body
+  const {
+    title_pattern,
+    statuses,
+    clear_failure_detail = true,
+    reason,
+  } = body
 
-  if (!task_ids || !Array.isArray(task_ids) || task_ids.length === 0) {
-    return NextResponse.json({ error: 'task_ids array required' }, { status: 400 })
-  }
-
-  if (task_ids.length > 50) {
-    return NextResponse.json({ error: 'Max 50 task IDs per call' }, { status: 400 })
+  if (!title_pattern) {
+    return NextResponse.json({ error: 'title_pattern is required' }, { status: 400 })
   }
 
   const checkedAt = new Date().toISOString()
+
+  // ── Fetch matching tasks ───────────────────────────────────────────────────
+  let query = admin
+    .from('tasks')
+    .select('id, status, title, retry_count')
+    .ilike('title', title_pattern)
+    .limit(100)
+
+  if (statuses && statuses.length > 0) {
+    query = query.in('status', statuses)
+  }
+
+  const { data: matchedTasks, error: fetchErr } = await query
+
+  if (fetchErr) {
+    return NextResponse.json({ error: fetchErr.message }, { status: 500 })
+  }
+
+  if (!matchedTasks || matchedTasks.length === 0) {
+    return NextResponse.json({
+      data: {
+        checked_at: checkedAt,
+        total: 0,
+        reset: 0,
+        summary: `No tasks found matching title_pattern: ${title_pattern}`,
+        results: [],
+      },
+    })
+  }
+
+  // ── Reset each matched task ───────────────────────────────────────────────
   const results: Array<{
     id: string
+    title: string
     old_status: string
     reset: boolean
     error?: string
   }> = []
 
-  for (const rawId of task_ids) {
+  for (const task of matchedTasks) {
     try {
-      // Support both full UUIDs and 8-char prefixes
-      const isPrefix = rawId.length === 8
-      let taskId: string | null = null
-
-      if (isPrefix) {
-        // Look up the full UUID by prefix
-        const { data: matches } = await admin
-          .from('tasks')
-          .select('id, status')
-          .ilike('id::text', `${rawId}%`)
-          .limit(2)
-
-        if (!matches || matches.length === 0) {
-          results.push({ id: rawId, old_status: 'unknown', reset: false, error: 'not found' })
-          continue
-        }
-        if (matches.length > 1) {
-          results.push({ id: rawId, old_status: 'ambiguous', reset: false, error: 'prefix matches multiple tasks' })
-          continue
-        }
-        taskId = matches[0].id
-      } else {
-        taskId = rawId
-      }
-
-      // Fetch current task state
-      const { data: task } = await admin
-        .from('tasks')
-        .select('id, status, title')
-        .eq('id', taskId)
-        .single()
-
-      if (!task) {
-        results.push({ id: rawId, old_status: 'unknown', reset: false, error: 'not found' })
-        continue
-      }
-
       if (task.status === 'ready') {
-        // Already ready — no-op
-        results.push({ id: rawId, old_status: 'ready', reset: false })
+        results.push({ id: task.id.slice(0, 8), title: task.title.slice(0, 60), old_status: 'ready', reset: false })
         continue
       }
 
-      // Build update payload
       const updates: Record<string, unknown> = {
         status: 'ready',
         dispatched_at: null,
@@ -118,25 +118,37 @@ export async function POST(request: NextRequest) {
       const { error: updateErr } = await admin
         .from('tasks')
         .update(updates)
-        .eq('id', taskId)
+        .eq('id', task.id)
 
       if (updateErr) {
-        results.push({ id: rawId, old_status: task.status, reset: false, error: updateErr.message })
+        results.push({
+          id: task.id.slice(0, 8),
+          title: task.title.slice(0, 60),
+          old_status: task.status,
+          reset: false,
+          error: updateErr.message,
+        })
         continue
       }
 
-      // Release any resource lock held on this task
+      // Release any resource lock on this task
       await admin
         .from('resource_locks')
         .delete()
-        .eq('resource_id', taskId)
+        .eq('resource_id', task.id)
         .eq('resource_type', 'task')
 
-      results.push({ id: rawId, old_status: task.status, reset: true })
+      results.push({
+        id: task.id.slice(0, 8),
+        title: task.title.slice(0, 60),
+        old_status: task.status,
+        reset: true,
+      })
     } catch (err: unknown) {
       results.push({
-        id: rawId,
-        old_status: 'unknown',
+        id: task.id.slice(0, 8),
+        title: task.title.slice(0, 60),
+        old_status: task.status,
         reset: false,
         error: err instanceof Error ? err.message : String(err),
       })
@@ -149,12 +161,12 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     data: {
       checked_at: checkedAt,
-      total: task_ids.length,
+      total: matchedTasks.length,
       reset: successCount,
       already_ready: alreadyReady,
       failed: results.filter(r => !r.reset && r.old_status !== 'ready').length,
       results,
-      summary: `Reset ${successCount}/${task_ids.length} tasks to ready (${alreadyReady} already ready)`,
+      summary: `Reset ${successCount}/${matchedTasks.length} tasks to ready (${alreadyReady} already ready)`,
     },
   })
 }
