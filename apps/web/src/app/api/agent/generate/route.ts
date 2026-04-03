@@ -456,15 +456,22 @@ export async function POST(request: NextRequest) {
     generated_files: patchResult.files_modified,
   })
 
-  await recordGenerationEvent(
-    supabase,
-    project_id,
-    task_id,
-    agent_output_id,
-    'files_written',
-    patchResult.files_modified,
-    generationResult.validation.warnings,
-  )
+  // Non-fatal: audit log insert must NOT block GitHub commit (step 5).
+  // generation_events table may be missing or have a constraint violation;
+  // that must never prevent code from being committed.
+  try {
+    await recordGenerationEvent(
+      supabase,
+      project_id,
+      task_id,
+      agent_output_id,
+      'files_written',
+      patchResult.files_modified,
+      generationResult.validation.warnings,
+    )
+  } catch (evtErr) {
+    console.warn('[agent/generate] generation_events insert failed (non-fatal, step 4):', evtErr)
+  }
 
   // ── Step 5: GitHub commit + G4 Verification Gate ────────────────────────
   // Read the written file contents from project_files table and commit to GitHub.
