@@ -80,7 +80,9 @@ PLATFORM SCHEMA — AI Newsletter Platform:
 Core tables: campaigns, subscribers, audience_lists, email_templates,
 send_jobs, campaign_analytics, automation_sequences, automation_steps,
 ai_content_generations, subscriber_events, unsubscribes, bounce_logs,
-campaign_segments, api_keys, webhook_endpoints
+campaign_segments, api_keys, webhook_endpoints,
+onboarding_progress, user_settings, notification_preferences,
+sender_profiles, domain_verifications, import_jobs
 
 Use these for all DB references. Do NOT reference BuildOS internal tables
 (tasks, blueprints, job_queue, etc.) in this platform's code.
