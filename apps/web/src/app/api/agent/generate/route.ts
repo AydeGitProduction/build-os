@@ -521,10 +521,68 @@ export async function POST(request: NextRequest) {
         }
       }
     } else {
-      console.log(`[agent/generate] No project GitHub integration found — using global env vars`)
+      // B0.3a: deployment_targets is canonical source of truth for per-project routing.
+      // Filter to production environment_id to get the correct row and avoid multi-row issues.
+      try {
+        const { data: prodEnv } = await (adminForCommit as any)
+          .from('project_environments')
+          .select('id')
+          .eq('project_id', project_id)
+          .eq('is_production', true)
+          .maybeSingle()
+
+        if (prodEnv?.id) {
+          const { data: dtTarget } = await (adminForCommit as any)
+            .from('deployment_targets')
+            .select('target_config')
+            .eq('project_id', project_id)
+            .eq('environment_id', prodEnv.id)
+            .eq('provider', 'vercel')
+            .eq('status', 'live')
+            .maybeSingle()
+
+          const repoFullName = dtTarget?.target_config?.github_repo_fullname as string | undefined
+          if (repoFullName) {
+            const [dtOwner, dtRepo] = repoFullName.split('/')
+            if (dtOwner && dtRepo) {
+              console.log(`[agent/generate] B0.3a routing → deployment_targets (production): ${dtOwner}/${dtRepo}`)
+              projectRepoOverride = {
+                owner: dtOwner,
+                repo: dtRepo,
+                noPathPrefix: true,
+              }
+            }
+          }
+        }
+      } catch (dtErr) {
+        console.warn('[agent/generate] deployment_targets routing lookup failed:', dtErr)
+      }
     }
   } catch (intErr) {
     console.warn(`[agent/generate] Could not fetch project_integrations:`, intErr)
+  }
+
+  // B0.3a SAFETY GATE: if no project-bound routing data found, FAIL SAFELY.
+  if (!projectRepoOverride) {
+    const noRouteMsg =
+      `B0.3a-ROUTING-FAIL: No project-bound GitHub repo found for project ${project_id}. ` +
+      `Bootstrap the project first to provision its GitHub repo. Commit blocked.`
+    console.error('[agent/generate] ROUTING SAFETY GATE:', noRouteMsg)
+    await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
+      generation_errors: [noRouteMsg],
+    })
+    try {
+      await recordGenerationEvent(supabase, project_id, task_id, agent_output_id, 'compile_failed', [], [noRouteMsg])
+    } catch { /* non-fatal */ }
+    await (adminForCommit as any)
+      .from('tasks')
+      .update({
+        status: 'blocked',
+        failure_detail: noRouteMsg,
+        failure_category: 'routing_missing',
+      })
+      .eq('id', task_id)
+    return NextResponse.json({ error: noRouteMsg, routing_missing: true }, { status: 422 })
   }
 
   try {
