@@ -1,7 +1,7 @@
 /**
  * GET /api/admin/gen-status?task_id=<id>
  *
- * Supervisor diagnostic: check agent_outputs.generation_status for recent tasks.
+ * Supervisor diagnostic: check agent_outputs.generation_status + commit_delivery_logs for recent tasks.
  * Auth: X-Buildos-Secret header.
  */
 
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
 
   let taskQuery = admin.from('tasks').select('id, title, status, task_type, retry_count')
   if (taskId) {
-    taskQuery = taskQuery.ilike('id::text', `${taskId}%`) as typeof taskQuery
+    taskQuery = taskQuery.ilike('title', `%${taskId}%`) as typeof taskQuery
   } else {
     taskQuery = taskQuery.ilike('title', `%${titlePattern}%`) as typeof taskQuery
   }
@@ -46,9 +46,24 @@ export async function GET(request: NextRequest) {
 
     const { data: genEvents } = await admin
       .from('generation_events')
-      .select('id, event_type, files_committed, created_at')
+      .select('id, event_type, files_committed, error_message, created_at')
       .eq('task_id', task.id)
       .order('created_at', { ascending: false })
+      .limit(5)
+
+    // Check commit_delivery_logs
+    const { data: commitLogs } = await admin
+      .from('commit_delivery_logs')
+      .select('id, target_path, verified, error_detail, commit_sha, created_at')
+      .eq('task_id', task.id)
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    // Check project_files
+    const { data: projectFiles } = await admin
+      .from('project_files')
+      .select('file_path, updated_at')
+      .eq('project_id', task.id)
       .limit(5)
 
     results.push({
@@ -63,7 +78,16 @@ export async function GET(request: NextRequest) {
         id: e.id.slice(0, 8),
         event_type: e.event_type,
         files_committed: e.files_committed,
+        error: e.error_message,
         created_at: e.created_at,
+      })),
+      commit_delivery_logs: (commitLogs ?? []).map(l => ({
+        id: l.id?.slice(0, 8),
+        path: l.target_path?.slice(0, 80),
+        verified: l.verified,
+        error: l.error_detail?.slice(0, 100),
+        sha: l.commit_sha?.slice(0, 8),
+        created_at: l.created_at,
       })),
     })
   }
