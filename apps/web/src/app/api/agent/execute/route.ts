@@ -144,7 +144,7 @@ CRITICAL RULES:
 
     backend_engineer: {
       model: MODEL_SONNET,
-      maxTokens: 8192,
+      maxTokens: 16384,
       temperature: 0.3,
       systemPrompt: `You are a senior backend engineer for Build OS — an autonomous SaaS platform.
 
@@ -188,7 +188,7 @@ YOUR STANDARDS:
 
     integration_engineer: {
       model: MODEL_SONNET,
-      maxTokens: 8192,
+      maxTokens: 16384,
       temperature: 0.3,
       systemPrompt: `You are a senior integration engineer for Build OS. You connect external services (Stripe, OAuth providers, webhooks, third-party APIs) to the autonomous SaaS platform.
 
@@ -310,7 +310,7 @@ DOCUMENTATION STANDARDS:
 
     frontend_engineer: {
       model: MODEL_SONNET,
-      maxTokens: 8192,
+      maxTokens: 16384,
       temperature: 0.3,
       systemPrompt: `You are a senior frontend engineer for Build OS.
 
@@ -906,6 +906,55 @@ async function runAgentExecution(payload: Record<string, unknown>, BUILDOS_SECRE
       idempotency_key,
     }
     ctx = await loadTaskContext(ctx)
+
+    // ── 2b. PX-1: Inject platform-specific context into agent system prompt ──
+    // When a project has a non-saas project_type (ai_newsletter, crm, etc.),
+    // override the generic "Build OS" system prompt with domain-specific context.
+    // This prevents agents from generating BuildOS-domain code for client projects.
+    try {
+      const adminForPX1 = createAdminSupabaseClient()
+      const { data: projRec } = await adminForPX1
+        .from('projects')
+        .select('project_type, name')
+        .eq('id', project_id)
+        .maybeSingle()
+
+      if (projRec?.project_type && projRec.project_type !== 'saas') {
+        const { getPlatformContext } = await import('@/lib/platform-registry')
+        const pCtx = getPlatformContext(projRec.project_type)
+        const entities = pCtx.entities.join(', ')
+        const forbidden = pCtx.forbiddenTerms.join(', ')
+
+        const DOMAIN_LOCK = `DOMAIN LOCK (MANDATORY): You are building the ${pCtx.name}.
+- Domain: ${pCtx.domain}
+- Core entities you work with: ${entities}
+- FORBIDDEN terms (do NOT use in code, comments, or variable names): ${forbidden}
+- This is NOT Build OS. Do not reference Build OS concepts, pipelines, agents, or orchestration unless the task explicitly requires it.`
+
+        const SCHEMA_LOCK = `SCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES):
+${pCtx.schemaHint}`
+
+        const LANG_LOCK = `LANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, C#, Ruby, or any other language. Any non-TypeScript/SQL output will be automatically rejected.`
+
+        const STACK_LOCK = `STACK LOCK (MANDATORY): FORBIDDEN packages: prisma, @prisma/client, next-auth, auth.js, drizzle-orm. REQUIRED patterns: For server-side DB use createAdminSupabaseClient() from @/lib/supabase/server. For auth use supabase.auth.getUser(). NEVER use deprecated auth-helpers packages.`
+
+        const platformSystemPrompts: Partial<Record<string, string>> = {
+          backend_engineer:     `You are a senior backend engineer building the ${pCtx.name}. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANG_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`,
+          frontend_engineer:    `You are a senior frontend engineer building the ${pCtx.name}. Tech stack: Next.js 14, TypeScript, Tailwind CSS, Supabase Realtime. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANG_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`,
+          integration_engineer: `You are a senior integration engineer building the ${pCtx.name}. Connect external services with webhook verification, idempotency, and secure credential storage. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANG_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`,
+          qa_security_auditor:  `You are a senior QA engineer for the ${pCtx.name}. Generate 3-5 critical test cases ONLY. Each code block MAX 20 lines. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`,
+          documentation_engineer: `You are a technical documentation engineer for the ${pCtx.name}. Write developer-facing Markdown docs. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`,
+        }
+
+        const platformPrompt = platformSystemPrompts[agent_role]
+        if (platformPrompt) {
+          roleConfig.systemPrompt = platformPrompt
+          console.log(`[agent/execute] PX-1: injected ${pCtx.name} context for role=${agent_role} project=${projRec.name}`)
+        }
+      }
+    } catch (pxErr) {
+      console.warn('[agent/execute] PX-1: platform context injection failed (non-fatal):', pxErr)
+    }
 
     // ── 3. Mock mode if no API key ────────────────────────────────────────────
     if (!ANTHROPIC_API_KEY) {
