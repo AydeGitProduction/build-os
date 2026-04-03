@@ -97,36 +97,42 @@ const KNOWN_BUILDOS_TABLES = new Set([
 ])
 
 // ── WS1 HARDENING: Forbidden packages — permanent stack discipline ────────────
-// Any agent output importing these packages is an automatic FAIL (WRONG_STACK).
+// Any agent output IMPORTING these packages is an automatic FAIL (WRONG_STACK).
 // These packages are NOT installed and MUST NOT be used in this codebase.
 // Correct alternatives: @supabase/ssr, createAdminSupabaseClient from @/lib/supabase/server
+//
+// IMPORTANT: We check for ACTUAL IMPORTS only, not string occurrences.
+// A validator file that lists 'next-auth' in a FORBIDDEN_PACKAGES constant is valid code.
+// We must not false-positive on string literals, comments, or variable declarations.
 
-const FORBIDDEN_PACKAGES = [
-  'next-auth',
-  'next-auth/',
-  'from "next-auth',
-  "from 'next-auth",
-  'require("next-auth',
-  "require('next-auth",
-  'prisma',
-  '@prisma/client',
-  'from "@prisma',
-  "from '@prisma",
-  'PrismaClient',
-  'prisma.', // prisma.user.findMany() etc
-  '@supabase/auth-helpers-nextjs',
-  'from "@supabase/auth-helpers',
-  "from '@supabase/auth-helpers",
-  'createClientComponentClient',
-  'createServerComponentClient',
-  'createMiddlewareClient',
+// Import-pattern regexes: match only actual import/require statements, NOT string literals.
+const FORBIDDEN_IMPORT_PATTERNS: Array<[string, RegExp]> = [
+  // next-auth
+  ['next-auth', /^\s*import\s+.*from\s+['"]next-auth/m],
+  ['next-auth', /require\s*\(\s*['"]next-auth/],
+  // prisma
+  ['prisma/@prisma/client', /^\s*import\s+.*from\s+['"]@?prisma/m],
+  ['prisma/@prisma/client', /require\s*\(\s*['"]@?prisma/],
+  ['PrismaClient', /new\s+PrismaClient\s*\(/],
+  ['prisma.', /\bprisma\.(user|post|session|account|project)\./],  // prisma ORM method calls
+  // Supabase auth-helpers (legacy — replaced by @supabase/ssr)
+  ['@supabase/auth-helpers-nextjs', /from\s+['"]@supabase\/auth-helpers/],
+  ['@supabase/auth-helpers-nextjs', /require\s*\(\s*['"]@supabase\/auth-helpers/],
+  ['createClientComponentClient', /\bcreateClientComponentClient\s*\(/],
+  ['createServerComponentClient', /\bcreateServerComponentClient\s*\(/],
+  ['createMiddlewareClient', /\bcreateMiddlewareClient\s*\(/],
 ]
 
 function checkForbiddenPackages(output: string): {
   hasForbidden: boolean
   detected: string[]
 } {
-  const detected = FORBIDDEN_PACKAGES.filter(pkg => output.includes(pkg))
+  const detected: string[] = []
+  for (const [label, pattern] of FORBIDDEN_IMPORT_PATTERNS) {
+    if (pattern.test(output) && !detected.includes(label)) {
+      detected.push(label)
+    }
+  }
   return { hasForbidden: detected.length > 0, detected }
 }
 
