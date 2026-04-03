@@ -7,7 +7,210 @@ import { resolveGitHubToken } from '@/lib/resolve-github-token'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Types
+// B0.3b: Cross-project target validation types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical repo target for a project — derived from project_integrations
+ * (the same source used by generate/route.ts to pick the commit destination).
+ */
+export interface ProjectRepoTarget {
+  owner: string
+  repo: string
+  branch: string
+  /** Full repo identifier e.g. "AydeGitBuildOS/buildos-endtoendtest" */
+  fullName: string
+  /** Source of this target: "project_integrations" or "env_vars" or "unknown" */
+  source: 'project_integrations' | 'env_vars' | 'unknown'
+}
+
+/**
+ * Result of a cross-project target match check.
+ * VERIFIED_DONE is only allowed when expected === actual AND files are in repo.
+ */
+export type CommitClassification =
+  | 'VERIFIED_DONE'
+  | 'FALSE_DONE'
+  | 'DONE_BUT_UNVERIFIED'
+
+export interface CrossProjectCheckResult {
+  classification: CommitClassification
+  /** Populated when classification is FALSE_DONE */
+  reason?: 'CROSS_PROJECT_TARGET_MISMATCH' | 'FILES_NOT_IN_REPO' | 'VERIFICATION_SKIPPED'
+  expected: ProjectRepoTarget
+  actual: ProjectRepoTarget
+  target_match: boolean
+  files_verified: boolean
+  /** Founder-readable incident message for mismatch cases */
+  incident_message?: string
+}
+
+/**
+ * WS1 — Compute the expected commit target for a project from project_integrations.
+ * Returns env-var fallback if no integration is configured.
+ * This is the canonical source of truth for where a project's code should be delivered.
+ */
+export function resolveExpectedTarget(
+  projectIntegrationRepoUrl: string | null | undefined,
+): ProjectRepoTarget {
+  if (projectIntegrationRepoUrl) {
+    const match = projectIntegrationRepoUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/)
+    if (match) {
+      const owner = match[1]
+      const repo = match[2]
+      return {
+        owner,
+        repo,
+        branch: process.env.GITHUB_REPO_BRANCH ?? 'main',
+        fullName: `${owner}/${repo}`,
+        source: 'project_integrations',
+      }
+    }
+  }
+
+  // Fall back to global env vars
+  const owner = process.env.GITHUB_REPO_OWNER ?? ''
+  const repo = process.env.GITHUB_REPO_NAME ?? ''
+  return {
+    owner,
+    repo,
+    branch: process.env.GITHUB_REPO_BRANCH ?? 'main',
+    fullName: owner && repo ? `${owner}/${repo}` : 'unknown/unknown',
+    source: owner && repo ? 'env_vars' : 'unknown',
+  }
+}
+
+/**
+ * WS2 — Extract the actual commit target from what commitFilesToGitHub used.
+ * This mirrors the resolution logic in generate/route.ts.
+ */
+export function extractActualTarget(opts: {
+  repoOverrideOwner?: string
+  repoOverrideRepo?: string
+  repoOverrideBranch?: string
+}): ProjectRepoTarget {
+  const owner = opts.repoOverrideOwner ?? process.env.GITHUB_REPO_OWNER ?? ''
+  const repo = opts.repoOverrideRepo ?? process.env.GITHUB_REPO_NAME ?? ''
+  const branch = opts.repoOverrideBranch ?? process.env.GITHUB_REPO_BRANCH ?? 'main'
+  const source = (opts.repoOverrideOwner || opts.repoOverrideRepo)
+    ? 'project_integrations'
+    : (owner && repo ? 'env_vars' : 'unknown')
+  return {
+    owner,
+    repo,
+    branch,
+    fullName: owner && repo ? `${owner}/${repo}` : 'unknown/unknown',
+    source,
+  }
+}
+
+/**
+ * WS3+WS4+WS5 — Strict cross-project match check.
+ * Compares expected and actual targets. If they don't match, returns FALSE_DONE.
+ * If they match but files aren't verified, returns DONE_BUT_UNVERIFIED.
+ * VERIFIED_DONE requires: match + all files verified.
+ */
+export function classifyCommitDelivery(
+  expected: ProjectRepoTarget,
+  actual: ProjectRepoTarget,
+  filesVerified: boolean,
+  opts: {
+    task_id: string
+    project_id: string
+    commit_sha: string
+    file_paths: string[]
+  },
+): CrossProjectCheckResult {
+  const targetMatch =
+    expected.owner.toLowerCase() === actual.owner.toLowerCase() &&
+    expected.repo.toLowerCase() === actual.repo.toLowerCase()
+
+  if (!targetMatch) {
+    const incident = buildMismatchIncidentMessage({
+      task_id: opts.task_id,
+      project_id: opts.project_id,
+      expected,
+      actual,
+      commit_sha: opts.commit_sha,
+      file_paths: opts.file_paths,
+    })
+    return {
+      classification: 'FALSE_DONE',
+      reason: 'CROSS_PROJECT_TARGET_MISMATCH',
+      expected,
+      actual,
+      target_match: false,
+      files_verified: false,
+      incident_message: incident,
+    }
+  }
+
+  if (!filesVerified) {
+    return {
+      classification: 'DONE_BUT_UNVERIFIED',
+      reason: 'FILES_NOT_IN_REPO',
+      expected,
+      actual,
+      target_match: true,
+      files_verified: false,
+    }
+  }
+
+  return {
+    classification: 'VERIFIED_DONE',
+    expected,
+    actual,
+    target_match: true,
+    files_verified: true,
+  }
+}
+
+/**
+ * WS5 — Generate a founder-readable mismatch incident message.
+ * Called when cross-project target mismatch is detected.
+ */
+export function buildMismatchIncidentMessage(opts: {
+  task_id: string
+  project_id: string
+  expected: ProjectRepoTarget
+  actual: ProjectRepoTarget
+  commit_sha: string
+  file_paths: string[]
+}): string {
+  const { task_id, project_id, expected, actual, commit_sha, file_paths } = opts
+  return [
+    `[B0.3b] CROSS_PROJECT_TARGET_MISMATCH INCIDENT`,
+    ``,
+    `Task:     ${task_id}`,
+    `Project:  ${project_id}`,
+    ``,
+    `Expected commit target (from project routing):`,
+    `  Repo:   ${expected.fullName}`,
+    `  Branch: ${expected.branch}`,
+    `  Source: ${expected.source}`,
+    ``,
+    `Actual commit target (where files were delivered):`,
+    `  Repo:   ${actual.fullName}`,
+    `  Branch: ${actual.branch}`,
+    `  Source: ${actual.source}`,
+    ``,
+    `Commit SHA: ${commit_sha}`,
+    `Files:      ${file_paths.join(', ')}`,
+    ``,
+    `Classification: FALSE_DONE`,
+    `Reason: Commit was delivered to the wrong repository.`,
+    `        VERIFIED_DONE requires the commit repo to match the project's canonical target.`,
+    ``,
+    `Remediation:`,
+    `  1. Check project_integrations for project ${project_id}`,
+    `  2. Verify github_repo_url matches the intended delivery repo`,
+    `  3. Replay the generate/commit step once project routing is corrected`,
+    `  4. Do NOT mark task as completed until repo target is confirmed correct`,
+  ].join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types (original)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface CommitFileOptions {

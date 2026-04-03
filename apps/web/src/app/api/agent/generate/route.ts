@@ -11,11 +11,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/supabase/server'
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
-import { commitFilesToGitHub, triggerVercelDeploy, CommitRepoOverride } from '@/lib/github-commit'
+import { commitFilesToGitHub, triggerVercelDeploy, CommitRepoOverride, verifyFilesInCommitRepo } from '@/lib/github-commit'
 import {
   verifyCommitDelivery,
   logCommitDelivery,
   escalateToIncident,
+  resolveExpectedTarget,
+  extractActualTarget,
+  classifyCommitDelivery,
 } from '@/lib/commit-reliability'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,7 +496,11 @@ export async function POST(request: NextRequest) {
   // project_integrations.environment_map contains github_repo_url when the
   // integration is GitHub (format: "https://github.com/<owner>/<repo>").
   // Falls back to global GITHUB_REPO_* env vars if no integration is found.
+  //
+  // B0.3b: Also capture the canonical github_repo_url for cross-project validation.
+  // This becomes the "expected target" that the actual commit must match.
   let projectRepoOverride: CommitRepoOverride | undefined
+  let canonicalIntegrationRepoUrl: string | null = null
   try {
     const { data: integrations } = await (adminForCommit as any)
       .from('project_integrations')
@@ -507,6 +514,7 @@ export async function POST(request: NextRequest) {
 
     if (githubIntegration?.environment_map?.github_repo_url) {
       const repoUrl = githubIntegration.environment_map.github_repo_url as string
+      canonicalIntegrationRepoUrl = repoUrl // B0.3b: capture for cross-project check
       // Parse: https://github.com/owner/repo
       const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/)
       if (match) {
@@ -611,70 +619,129 @@ export async function POST(request: NextRequest) {
 
         console.log(`[agent/generate] GitHub commit: ${commitSha?.slice(0, 8)} — ${patchResult.files_modified.join(', ')}`)
 
-        // ── G4: Verify each committed file exists in repo ─────────────────────
-        for (const filePath of patchResult.files_modified) {
-          const verifyResult = await verifyCommitDelivery(filePath)
+        // ── B0.3b: Cross-project target validation ────────────────────────────
+        // WS1: expected target — from project_integrations (canonical routing source)
+        const expectedTarget = resolveExpectedTarget(canonicalIntegrationRepoUrl)
+        // WS2: actual target — what commitFilesToGitHub just used
+        const actualTarget = extractActualTarget({
+          repoOverrideOwner: projectRepoOverride?.owner,
+          repoOverrideRepo: projectRepoOverride?.repo,
+          repoOverrideBranch: projectRepoOverride?.branch,
+        })
+        const actualBranch = projectRepoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH ?? 'main'
+        const pathPrefix = projectRepoOverride?.noPathPrefix ? '' : (process.env.GITHUB_REPO_PATH_PREFIX ?? '')
 
+        // WS3+WS4: Verify files using the ACTUAL commit repo + GitHub App token
+        // (NOT the env-var GITHUB_TOKEN path which is always absent and skips verification)
+        const verifyBulkResult = await verifyFilesInCommitRepo(
+          patchResult.files_modified,
+          actualTarget.owner,
+          actualTarget.repo,
+          actualBranch,
+          pathPrefix,
+        )
+        allFilesVerified = verifyBulkResult.allVerified
+
+        // Log per-file verification results
+        for (const vr of verifyBulkResult.results) {
           const logId = await logCommitDelivery(adminForCommit, {
             task_id,
             project_id,
-            repo_name: projectRepoOverride?.owner && projectRepoOverride?.repo
-              ? `${projectRepoOverride.owner}/${projectRepoOverride.repo}`
-              : `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
-            branch_name: projectRepoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH ?? 'main',
-            target_path: filePath,
-            stub_created: false, // stub is set at dispatch time; this is post-commit verify
-            token_refreshed: true, // verifyCommitDelivery always calls ensureFreshToken
+            repo_name: actualTarget.fullName,
+            branch_name: actualBranch,
+            target_path: vr.path,
+            stub_created: false,
+            token_refreshed: true,
             commit_sha: commitSha,
-            commit_verified: verifyResult.verified,
-            verification_notes: verifyResult.notes,
+            commit_verified: vr.verified,
+            verification_notes: vr.notes,
           })
 
-          if (!verifyResult.verified) {
-            allFilesVerified = false
-            console.error(
-              `[agent/generate] ⚠ G4 VERIFICATION FAILED: ${filePath} — ${verifyResult.notes}`
-            )
-
-            // Escalate to incident if failure threshold reached
-            await escalateToIncident(
-              adminForCommit,
-              task_id,
-              project_id,
-              verifyResult.notes,
-              logId,
-            )
+          if (!vr.verified) {
+            console.error(`[agent/generate] ⚠ B0.3b VERIFICATION FAILED: ${vr.path} — ${vr.notes}`)
+            await escalateToIncident(adminForCommit, task_id, project_id, vr.notes, logId)
           }
         }
 
-        // ── G4 enforcement: block or complete task based on commit verification ──
+        // WS3+WS4: Strict cross-project classification
+        const crossProjectResult = classifyCommitDelivery(
+          expectedTarget,
+          actualTarget,
+          allFilesVerified,
+          {
+            task_id,
+            project_id,
+            commit_sha: commitSha ?? '',
+            file_paths: patchResult.files_modified,
+          },
+        )
+
+        console.log(
+          `[agent/generate] B0.3b cross-project check: expected=${expectedTarget.fullName} actual=${actualTarget.fullName} ` +
+          `match=${crossProjectResult.target_match} filesVerified=${crossProjectResult.files_verified} ` +
+          `→ ${crossProjectResult.classification}`
+        )
+
+        // ── G4 enforcement: block or complete task based on B0.3b classification ──
         // EXECUTION CONTRACT (Developer 2): This is the ONLY place that sets
         // status = 'completed'. QA PASS sets 'pending_deploy'. We set 'completed'
-        // here only after commit_verified = true + Vercel deploy triggered.
-        // This enforces: agent → generate → commit → deploy → verify → COMPLETED.
-        if (!allFilesVerified) {
-          // WS2: mark generation as commit_failed (not files_written) — truth matters
+        // here only after VERIFIED_DONE classification (target match + files verified).
+        // FALSE_DONE or DONE_BUT_UNVERIFIED → task goes to 'blocked'.
+        if (crossProjectResult.classification === 'FALSE_DONE') {
+          // CROSS_PROJECT_TARGET_MISMATCH or FILES_NOT_IN_REPO with mismatch
           await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
-            generation_errors: ['G4: commit_verified=false — files written locally but not confirmed in repo'],
+            generation_errors: [
+              crossProjectResult.incident_message ??
+              `B0.3b FALSE_DONE: ${crossProjectResult.reason} — expected=${expectedTarget.fullName} actual=${actualTarget.fullName}`,
+            ],
           })
 
-          // Commit verification failed — block the task regardless of current status.
-          // pending_deploy → blocked (commit proof absent)
+          const failureDetail = crossProjectResult.reason === 'CROSS_PROJECT_TARGET_MISMATCH'
+            ? `B0.3b: Commit delivered to wrong repo. Expected=${expectedTarget.fullName}, Actual=${actualTarget.fullName}. Task blocked — repo mismatch.`
+            : `B0.3b: ${crossProjectResult.reason}`
+
           await adminForCommit
             .from('tasks')
             .update({
               status: 'blocked',
-              failure_detail: 'G4: commit_verified=false — one or more files not found in repo after commit',
+              failure_detail: failureDetail,
+              failure_category: 'cross_project_target_mismatch',
+            })
+            .eq('id', task_id)
+
+          if (crossProjectResult.incident_message) {
+            await escalateToIncident(
+              adminForCommit,
+              task_id,
+              project_id,
+              crossProjectResult.incident_message,
+              'cross-project-check',
+            )
+          }
+
+          console.error(`[agent/generate] B0.3b: task ${task_id} → blocked (FALSE_DONE, ${crossProjectResult.reason})`)
+
+        } else if (crossProjectResult.classification === 'DONE_BUT_UNVERIFIED') {
+          // Target matched but files not confirmed in repo
+          await updateGenerationStatus(supabase, agent_output_id, 'commit_failed', {
+            generation_errors: ['B0.3b: DONE_BUT_UNVERIFIED — files not confirmed in repo after commit'],
+          })
+
+          await adminForCommit
+            .from('tasks')
+            .update({
+              status: 'blocked',
+              failure_detail: 'B0.3b: commit_verified=false — files not found in repo. Commit may have failed silently.',
               failure_category: 'commit_delivery',
             })
             .eq('id', task_id)
 
-          console.error(
-            `[agent/generate] G4: task ${task_id} forced to 'blocked' — ` +
-            `commit verification failed for ${patchResult.files_modified.join(', ')}`
-          )
+          console.error(`[agent/generate] B0.3b: task ${task_id} → blocked (DONE_BUT_UNVERIFIED)`)
+
         } else {
-          // ── Step 6: Vercel deploy hook (non-fatal, only on verified commit) ─
+          // VERIFIED_DONE: target matched + all files confirmed in correct repo
+
+          // ── Step 6: Vercel deploy hook (non-fatal, only on VERIFIED_DONE) ────
           const deployResult = await triggerVercelDeploy()
           deployTriggered = deployResult.triggered
           deployUrl = deployResult.deploymentUrl ?? null
@@ -683,9 +750,8 @@ export async function POST(request: NextRequest) {
             console.warn('[agent/generate] Deploy hook skipped:', deployError)
           }
 
-          // ── VERIFIED_DONE: commit verified + deploy triggered → completed ──
+          // ── VERIFIED_DONE: commit verified + target matched → completed ──
           // This is the ONLY path to 'completed'. Transition from 'pending_deploy'.
-          // If task is already 'completed' (legacy path), this is a no-op.
           await adminForCommit
             .from('tasks')
             .update({
@@ -699,7 +765,7 @@ export async function POST(request: NextRequest) {
 
           console.log(
             `[agent/generate] VERIFIED_DONE: task ${task_id} → completed ` +
-            `commit=${commitSha?.slice(0, 8)} deploy=${deployTriggered}`
+            `repo=${actualTarget.fullName} commit=${commitSha?.slice(0, 8)} deploy=${deployTriggered}`
           )
         }
       } else {

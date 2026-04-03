@@ -236,6 +236,96 @@ export async function commitFilesToGitHub(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// B0.3b: Cross-project verification — verify files using GitHub App token
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verify that a set of files exist in a specific GitHub repo using the GitHub App token.
+ * This is the B0.3b truth-layer verification — it uses the SAME auth path as commits
+ * (GitHub App installation token), not GITHUB_TOKEN (PAT) env var which is never set.
+ *
+ * Unlike verifyCommitDelivery() in commit-reliability.ts (which always skips when
+ * GITHUB_TOKEN is absent), this function actively verifies using the App JWT and is
+ * the authoritative post-commit check.
+ *
+ * @param filePaths  - Paths as stored in project_files (no prefix applied here)
+ * @param owner      - GitHub repo owner from actual commit target
+ * @param repo       - GitHub repo name from actual commit target
+ * @param branch     - Branch committed to
+ * @param pathPrefix - Prefix applied during commit (e.g. '' for standalone repos)
+ */
+export async function verifyFilesInCommitRepo(
+  filePaths: string[],
+  owner: string,
+  repo: string,
+  branch: string,
+  pathPrefix: string = '',
+): Promise<{ allVerified: boolean; results: Array<{ path: string; verified: boolean; notes: string }> }> {
+  const appId = process.env.GITHUB_APP_ID
+  const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
+  const installationId = process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID
+
+  // If GitHub App not configured, we cannot verify — but we also cannot SKIP silently.
+  // Return unverified so the caller can decide whether to block or log.
+  if (!appId || !rawKey || !installationId) {
+    return {
+      allVerified: false,
+      results: filePaths.map(p => ({
+        path: p,
+        verified: false,
+        notes: `[B0.3b] GitHub App not configured (GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_INSTALLATION_ID missing). Cannot verify actual commit delivery.`,
+      })),
+    }
+  }
+
+  let token: string
+  try {
+    const privateKeyPem = normalisePrivateKey(rawKey)
+    token = await getInstallationToken(appId, installationId, privateKeyPem)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return {
+      allVerified: false,
+      results: filePaths.map(p => ({
+        path: p,
+        verified: false,
+        notes: `[B0.3b] Could not get GitHub App installation token: ${msg}`,
+      })),
+    }
+  }
+
+  const results: Array<{ path: string; verified: boolean; notes: string }> = []
+
+  for (const filePath of filePaths) {
+    const fullPath = pathPrefix ? `${pathPrefix}${filePath}` : filePath
+    try {
+      const res = await ghFetch(
+        `/repos/${owner}/${repo}/contents/${encodeURIComponent(fullPath)}?ref=${branch}`,
+        token,
+        'GET',
+      )
+      if (res.ok) {
+        results.push({ path: filePath, verified: true, notes: `[B0.3b] Verified: ${fullPath} exists in ${owner}/${repo}@${branch}` })
+      } else if (res.status === 404) {
+        results.push({ path: filePath, verified: false, notes: `[B0.3b] NOT FOUND: ${fullPath} in ${owner}/${repo}@${branch} (404)` })
+      } else if (res.status === 401 || res.status === 403) {
+        results.push({ path: filePath, verified: false, notes: `[B0.3b] Auth error (${res.status}) verifying ${fullPath} in ${owner}/${repo}. App may lack access to this repo.` })
+      } else {
+        results.push({ path: filePath, verified: false, notes: `[B0.3b] GitHub API ${res.status} for ${fullPath} in ${owner}/${repo}` })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      results.push({ path: filePath, verified: false, notes: `[B0.3b] Network error verifying ${fullPath}: ${msg}` })
+    }
+  }
+
+  return {
+    allVerified: results.every(r => r.verified),
+    results,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Vercel deploy trigger (supports both deploy hook URL and Deployments API)
 // ─────────────────────────────────────────────────────────────────────────────
 
