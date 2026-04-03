@@ -216,7 +216,27 @@ export async function POST(request: NextRequest) {
   try {
     const rawForOuterParse = processedRawOutput
     const outerParsed = JSON.parse(rawForOuterParse)
+
+    // ── Railway "Output parse error" wrapper recovery ────────────────────────
+    // When Railway's own JSON.parse fails (e.g. agent output has unescaped
+    // newlines in content strings), Railway wraps the raw text as:
+    //   { "summary": "Output parse error", "output": { "content": "<raw_text>", "format": "text" } }
+    // In this case we MUST extract the raw text from output.content and treat
+    // it as the actual agent output — stripping fences and re-parsing it.
     if (
+      outerParsed &&
+      typeof outerParsed === 'object' &&
+      !Array.isArray(outerParsed) &&
+      typeof (outerParsed as Record<string, unknown>).summary === 'string' &&
+      typeof ((outerParsed as Record<string, unknown>).output as Record<string, unknown> | null | undefined)?.content === 'string'
+    ) {
+      const innerRaw = ((outerParsed as Record<string, unknown>).output as Record<string, unknown>).content as string
+      // Re-apply fence stripping on the recovered raw text
+      const innerNoComments = innerRaw.replace(/^(\/\/[^\n]*\n)+/, '').trim()
+      const innerFenceMatch = innerNoComments.match(/^```(?:json|typescript|ts|js|javascript)?\s*\n([\s\S]*)\n?```\s*$/s)
+      processedRawOutput = innerFenceMatch ? innerFenceMatch[1].trim() : innerNoComments
+      console.log('[agent/generate] Unwrapped Railway parse-error wrapper — recovered raw agent output for re-parsing')
+    } else if (
       outerParsed &&
       typeof outerParsed === 'object' &&
       !Array.isArray(outerParsed) &&
