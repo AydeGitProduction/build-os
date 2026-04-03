@@ -6,12 +6,21 @@
  * - Pulls job from job_queue (DB) instead of HTTP request
  * - Posts result via signAndPost() with HMAC signature
  * - Updates job_queue status throughout
+ *
+ * PLATFORM CONTEXT (PX-1):
+ * Before dispatching to Claude, we fetch the project record from Supabase
+ * to read project_type, name, and description. This is fed into
+ * getPlatformContext() to inject domain-specific terminology into every
+ * agent system prompt and user message. Agents no longer hard-code
+ * "Build OS" — they understand what product they are building.
  */
 
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import { signAndPost } from './callback'
 import type { JobPayload, CallbackPayload } from './types'
+import { getPlatformContext } from './platform-registry'
+import type { PlatformContext } from './platform-registry'
 
 const MODEL_SONNET = 'claude-sonnet-4-6'
 const MODEL_OPUS   = 'claude-opus-4-6'
@@ -19,10 +28,10 @@ const MODEL_OPUS   = 'claude-opus-4-6'
 const COST_INPUT:  Record<string, number> = { [MODEL_SONNET]: 3.0,  [MODEL_OPUS]: 15.0 }
 const COST_OUTPUT: Record<string, number> = { [MODEL_SONNET]: 15.0, [MODEL_OPUS]: 75.0 }
 
-// ── WS3: Real DB schema snapshot (from migrations) ───────────────────────────
-// Auto-generated from migration files. Prevents agents from hallucinating tables.
-// Update this snapshot when new migrations are applied.
-const SCHEMA_SNAPSHOT = `
+// ── WS3: BuildOS internal schema (BuildOS platform itself) ───────────────────
+// Used ONLY when building BuildOS. Client platforms use their own schemaHint
+// from the platform registry.
+const BUILDOS_SCHEMA_SNAPSHOT = `
 REAL DATABASE TABLES (use ONLY these — any other table will cause QA FAIL):
 agent_outputs, answers, api_contracts, architecture_decisions, artifacts,
 audit_logs, blocked_reason_codes, blockers, blueprint_features,
@@ -50,7 +59,7 @@ permissions, subscriptions, payments, invoices, notifications,
 messages, conversations, channels, members, teams
 `.trim()
 
-// ── Role configs (identical to execute/route.ts) ──────────────────────────────
+// ── Role configs ──────────────────────────────────────────────────────────────
 
 type OutputType = 'code' | 'schema' | 'document' | 'test' | 'review' | 'qa_verdict'
 
@@ -63,89 +72,159 @@ interface RoleConfig {
   outputInstructions: string
 }
 
-function getRoleConfig(agentRole: string, taskType: string): RoleConfig {
+// ── PX-1: Build platform-aware system prompts ─────────────────────────────────
+//
+// Every role prompt now receives:
+//   - {PLATFORM}     → platform name, e.g. "AI Newsletter Platform"
+//   - {DOMAIN}       → domain context, e.g. "email marketing & AI content generation"
+//   - {ENTITIES}     → domain entity list, e.g. "Campaign, Subscriber, Template..."
+//   - {SCHEMA_LOCK}  → platform-specific schema hint (or BuildOS schema if null)
+//   - {FILE_PATHS}   → platform-specific file path rules
+//   - {FORBIDDEN}    → domain terms to avoid, preventing BuildOS terminology leakage
+
+function buildSystemPrompt(
+  role: string,
+  platformCtx: PlatformContext,
+  schemaSnapshot: string,
+): string {
+  const entities = platformCtx.entities.join(', ')
+  const forbidden = platformCtx.forbiddenTerms.join(', ')
+
+  const LANGUAGE_LOCK = `
+LANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, C#, Ruby, or any other language under any circumstances. Any non-TypeScript/SQL output will be automatically rejected. Every file must have a .ts, .tsx, or .sql extension.`.trim()
+
+  const STACK_LOCK = `
+STACK LOCK (MANDATORY — QA WILL REJECT VIOLATIONS): FORBIDDEN packages: prisma, @prisma/client, next-auth, next-auth/, auth.js, better-auth, drizzle-orm, @supabase/auth-helpers-nextjs, @supabase/auth-helpers-shared, createClientComponentClient, createServerComponentClient, createRouteHandlerClient. REQUIRED patterns: For server-side DB/auth use createAdminSupabaseClient() from @/lib/supabase/server. For client-side use createBrowserClient() from @supabase/ssr. For auth use supabase.auth.getUser() and supabase.auth.getSession(). NEVER use deprecated auth-helpers packages.`.trim()
+
+  const FRONTEND_PATH_RULES = `
+FILE PATH RULES (MANDATORY): Place files in the correct Next.js location for their type:
+- React pages: src/app/(dashboard)/page-name/page.tsx
+- React components: src/components/ComponentName.tsx
+- React hooks: src/hooks/useHookName.ts
+- Layout files: src/app/layout.tsx or src/app/(group)/layout.tsx
+- NEVER put UI components or pages in src/app/api/ — that directory is for API routes ONLY.
+Always use the semantically correct path for what you are building.
+${platformCtx.filePathRules ? `\nPLATFORM-SPECIFIC PATHS:\n${platformCtx.filePathRules}` : ''}`.trim()
+
+  const DOMAIN_LOCK = `
+DOMAIN LOCK (MANDATORY): You are building the ${platformCtx.name}.
+- Domain: ${platformCtx.domain}
+- Core entities you work with: ${entities}
+- FORBIDDEN terms (do NOT use these in code, comments, or variable names): ${forbidden}
+- This is NOT Build OS. Do not reference Build OS concepts, pipelines, agents, or orchestration unless the task explicitly requires it.`.trim()
+
+  const SCHEMA_LOCK = `
+SCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES):
+${schemaSnapshot}`.trim()
+
+  switch (role) {
+    case 'architect':
+      return `You are a senior software architect building the ${platformCtx.name} — a ${platformCtx.domain} platform. Your specialty: PostgreSQL schemas, TypeScript interfaces, API contracts, and system architecture. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${SCHEMA_LOCK}`
+
+    case 'backend_engineer':
+      return `You are a senior backend engineer building the ${platformCtx.name}. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANGUAGE_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`
+
+    case 'frontend_engineer':
+      return `You are a senior frontend engineer building the ${platformCtx.name}. Tech stack: Next.js 14, TypeScript, Tailwind CSS, Supabase Realtime. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANGUAGE_LOCK}\n\n${STACK_LOCK}\n\n${FRONTEND_PATH_RULES}\n\n${SCHEMA_LOCK}`
+
+    case 'qa_security_auditor':
+      return `You are a senior QA engineer for the ${platformCtx.name}. Generate 3-5 critical test cases ONLY. Each code block MAX 20 lines. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'integration_engineer':
+      return `You are a senior integration engineer building the ${platformCtx.name}. Connect external services with webhook verification, idempotency, and secure credential storage. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANGUAGE_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`
+
+    case 'documentation_engineer':
+      return `You are a technical documentation engineer for the ${platformCtx.name}. Write developer-facing Markdown docs. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'product_analyst':
+      return `You are a senior product analyst for the ${platformCtx.name}. Competitive analysis, market research, feature prioritisation for a ${platformCtx.domain} product. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'cost_analyst':
+      return `You are a cost and ROI analyst for the ${platformCtx.name}. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'automation_engineer':
+      return `You are a senior automation engineer for the ${platformCtx.name}. n8n workflows, webhooks, cron scheduling for ${platformCtx.domain}. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'release_manager':
+      return `You are a release manager for the ${platformCtx.name}. Versioning, changelogs, deployment coordination. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    case 'recommendation_analyst':
+      return `You are a recommendation analyst for the ${platformCtx.name}. Prioritized, actionable recommendations from data. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}`
+
+    default:
+      return `You are an expert AI agent building the ${platformCtx.name}. Execute assigned tasks to production quality. Respond with valid JSON ONLY.\n\n${DOMAIN_LOCK}\n\n${LANGUAGE_LOCK}\n\n${STACK_LOCK}\n\n${SCHEMA_LOCK}`
+  }
+}
+
+function getRoleConfig(
+  agentRole: string,
+  taskType: string,
+  platformCtx: PlatformContext,
+  schemaSnapshot: string,
+): RoleConfig {
   const typeMap: Record<string, OutputType> = {
     code: 'code', schema: 'schema', document: 'document',
     test: 'test', review: 'review', deploy: 'document', design: 'schema',
   }
   const outputType: OutputType = typeMap[taskType] || 'document'
 
-  const configs: Record<string, Partial<RoleConfig>> = {
-    architect: {
-      model: MODEL_OPUS, maxTokens: 8192, temperature: 0.2,
-      systemPrompt: `You are a senior software architect for Build OS — an autonomous AI-powered SaaS project management platform. Your specialty: PostgreSQL schemas, TypeScript interfaces, API contracts, and system architecture. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"tables":[],"migration_sql":"","typescript_types":"","notes":""}}`,
-    },
-    backend_engineer: {
-      model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior backend engineer for Build OS. Tech stack: Next.js 14 App Router, TypeScript, Supabase, Vercel. All mutations require idempotency keys and writeAuditLog(). Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, C#, Ruby, or any other language under any circumstances. Any non-TypeScript/SQL output will be automatically rejected. Every file must have a .ts, .tsx, or .sql extension.\n\nSTACK LOCK (MANDATORY — QA WILL REJECT VIOLATIONS): FORBIDDEN packages: prisma, @prisma/client, next-auth, next-auth/, auth.js, better-auth, drizzle-orm, @supabase/auth-helpers-nextjs, @supabase/auth-helpers-shared, createClientComponentClient, createServerComponentClient, createRouteHandlerClient. REQUIRED patterns: For server-side DB/auth use createAdminSupabaseClient() from @/lib/supabase/server. For client-side use createBrowserClient() from @supabase/ssr. For auth use supabase.auth.getUser() and supabase.auth.getSession(). NEVER use deprecated auth-helpers packages.\n\nSCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES): ${SCHEMA_SNAPSHOT}`,
-      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/lib/example.ts","content":"// src/lib/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"migration_required":false,"migration_sql":null,"notes":""}}`,
-    },
-    frontend_engineer: {
-      model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior frontend engineer for Build OS. Tech stack: Next.js 14, TypeScript, Tailwind CSS, Supabase Realtime. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or CSS (.css) files. NEVER write Go, Python, Rust, Java, or any non-TypeScript code. Every generated file must have a .ts or .tsx extension. Any other language is automatically rejected.\n\nSTACK LOCK (MANDATORY — QA WILL REJECT VIOLATIONS): FORBIDDEN packages: prisma, @prisma/client, next-auth, next-auth/, auth.js, @supabase/auth-helpers-nextjs, @supabase/auth-helpers-shared, createClientComponentClient, createServerComponentClient, createRouteHandlerClient. REQUIRED patterns: For client-side Supabase use createBrowserClient() from @supabase/ssr. For auth use supabase.auth.getUser(). NEVER use deprecated @supabase/auth-helpers-nextjs — it is discontinued. Use @supabase/ssr instead.\n\nFILE PATH RULES (MANDATORY): Place files in the correct Next.js location for their type:\n- React pages: src/app/(dashboard)/page-name/page.tsx\n- React components: src/components/ComponentName.tsx\n- React hooks: src/hooks/useHookName.ts\n- Layout files: src/app/layout.tsx or src/app/(group)/layout.tsx\n- NEVER put UI components or pages in src/app/api/ — that directory is for API routes ONLY.\nAlways use the semantically correct path for what you are building.\n\nSCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES): ${SCHEMA_SNAPSHOT}`,
-      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/components/Example.tsx","content":"// src/components/Example.tsx\n// TypeScript/React content here"}],"language":"typescript","dependencies":[],"notes":""}}`,
-    },
-    qa_security_auditor: {
-      model: MODEL_SONNET, maxTokens: 1024, temperature: 0.2,
-      systemPrompt: `You are a senior QA engineer for Build OS. Generate 3-5 critical test cases ONLY. Each code block MAX 20 lines. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"test_cases":[{"name":"","description":"","code":"","type":"unit","severity":"critical"}],"security_findings":[],"coverage_areas":[],"overall_verdict":"pass","notes":""}}`,
-    },
-    integration_engineer: {
-      model: MODEL_SONNET, maxTokens: 8192, temperature: 0.3,
-      systemPrompt: `You are a senior integration engineer for Build OS. Connect external services with webhook verification, idempotency, and secure credential storage. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK (MANDATORY): This is a TypeScript/Next.js monorepo. You MUST generate ONLY TypeScript (.ts, .tsx) or SQL (.sql) files. NEVER write Go, Python, Rust, Java, or any non-TypeScript code. Every generated file must have a .ts, .tsx, or .sql extension. Any other language is automatically rejected.\n\nSTACK LOCK (MANDATORY — QA WILL REJECT VIOLATIONS): FORBIDDEN packages: prisma, @prisma/client, next-auth, @supabase/auth-helpers-nextjs, createClientComponentClient. REQUIRED: Use Supabase exclusively for DB and auth. Server-side: createAdminSupabaseClient() from @/lib/supabase/server. Client-side: createBrowserClient() from @supabase/ssr. Integration credentials must be stored encrypted in Supabase, never in plaintext.\n\nSCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES): ${SCHEMA_SNAPSHOT}`,
-      outputInstructions: `{"summary":"...","output":{"files":[{"path":"src/lib/integrations/example.ts","content":"// src/lib/integrations/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"setup_steps":[],"notes":""}}`,
-    },
-    documentation_engineer: {
-      model: MODEL_SONNET, maxTokens: 6144, temperature: 0.4,
-      systemPrompt: `You are a technical documentation engineer for Build OS. Write developer-facing Markdown docs. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"content":"# Title\\n\\n...","format":"markdown","audience":"developers","doc_path":"docs/...","related_docs":[]}}`,
-    },
-    product_analyst: {
-      model: MODEL_SONNET, maxTokens: 6144, temperature: 0.3,
-      systemPrompt: `You are a senior product analyst for Build OS. Competitive analysis, market research, feature prioritisation. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"format":"markdown","content":"# Analysis\\n\\n...","structured_data":{},"notes":""}}`,
-    },
-    cost_analyst: {
-      model: MODEL_SONNET, maxTokens: 4096, temperature: 0.2,
-      systemPrompt: `You are a cost and ROI analyst for Build OS. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"format":"markdown","content":"# Cost Analysis\\n\\n...","notes":""}}`,
-    },
-    automation_engineer: {
-      model: MODEL_SONNET, maxTokens: 6144, temperature: 0.25,
-      systemPrompt: `You are a senior automation engineer for Build OS. n8n workflows, webhooks, cron scheduling. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"format":"markdown","content":"# Automation Design\\n\\n...","notes":""}}`,
-    },
-    release_manager: {
-      model: MODEL_SONNET, maxTokens: 4096, temperature: 0.3,
-      systemPrompt: `You are a release manager for Build OS. Versioning, changelogs, deployment coordination. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"format":"markdown","content":"# Release Notes\\n\\n...","notes":""}}`,
-    },
-    recommendation_analyst: {
-      model: MODEL_SONNET, maxTokens: 4096, temperature: 0.3,
-      systemPrompt: `You are a recommendation analyst for Build OS. Prioritized, actionable recommendations from data. Respond with valid JSON ONLY.`,
-      outputInstructions: `{"summary":"...","output":{"format":"markdown","content":"# Recommendations\\n\\n...","notes":""}}`,
-    },
+  const outputInstructions: Record<string, string> = {
+    architect:              `{"summary":"...","output":{"tables":[],"migration_sql":"","typescript_types":"","notes":""}}`,
+    backend_engineer:       `{"summary":"...","output":{"files":[{"path":"src/lib/example.ts","content":"// src/lib/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"migration_required":false,"migration_sql":null,"notes":""}}`,
+    frontend_engineer:      `{"summary":"...","output":{"files":[{"path":"src/components/Example.tsx","content":"// src/components/Example.tsx\n// TypeScript/React content here"}],"language":"typescript","dependencies":[],"notes":""}}`,
+    qa_security_auditor:    `{"summary":"...","output":{"test_cases":[{"name":"","description":"","code":"","type":"unit","severity":"critical"}],"security_findings":[],"coverage_areas":[],"overall_verdict":"pass","notes":""}}`,
+    integration_engineer:   `{"summary":"...","output":{"files":[{"path":"src/lib/integrations/example.ts","content":"// src/lib/integrations/example.ts\n// TypeScript content here"}],"language":"typescript","dependencies":[],"env_vars":[],"setup_steps":[],"notes":""}}`,
+    documentation_engineer: `{"summary":"...","output":{"content":"# Title\\n\\n...","format":"markdown","audience":"developers","doc_path":"docs/...","related_docs":[]}}`,
+    product_analyst:        `{"summary":"...","output":{"format":"markdown","content":"# Analysis\\n\\n...","structured_data":{},"notes":""}}`,
+    cost_analyst:           `{"summary":"...","output":{"format":"markdown","content":"# Cost Analysis\\n\\n...","notes":""}}`,
+    automation_engineer:    `{"summary":"...","output":{"format":"markdown","content":"# Automation Design\\n\\n...","notes":""}}`,
+    release_manager:        `{"summary":"...","output":{"format":"markdown","content":"# Release Notes\\n\\n...","notes":""}}`,
+    recommendation_analyst: `{"summary":"...","output":{"format":"markdown","content":"# Recommendations\\n\\n...","notes":""}}`,
   }
 
-  const roleConfig = configs[agentRole] || {
-    model: MODEL_SONNET, maxTokens: 4096, temperature: 0.35,
-    systemPrompt: `You are an expert AI agent for Build OS. Execute assigned tasks to production quality. Respond with valid JSON ONLY.\n\nLANGUAGE LOCK: If this task requires code generation, use ONLY TypeScript (.ts, .tsx) or SQL (.sql). NEVER generate Go, Python, or any non-TypeScript language.\n\nSTACK LOCK: This project uses Supabase for DB and auth. NEVER use Prisma, @prisma/client, next-auth, or auth-helpers. Always use Supabase client patterns.\n\nSCHEMA LOCK (MANDATORY — QA WILL REJECT UNKNOWN TABLES): ${SCHEMA_SNAPSHOT}`,
-    outputInstructions: `{"summary":"...","output":{"content":"# Output\\n\\n...","format":"markdown"}}`,
+  const maxTokensByRole: Record<string, number> = {
+    architect: 8192, backend_engineer: 8192, frontend_engineer: 8192,
+    qa_security_auditor: 1024, integration_engineer: 8192,
+    documentation_engineer: 6144, product_analyst: 6144,
+    automation_engineer: 6144, cost_analyst: 4096,
+    release_manager: 4096, recommendation_analyst: 4096,
+  }
+
+  const tempByRole: Record<string, number> = {
+    architect: 0.2, backend_engineer: 0.3, frontend_engineer: 0.3,
+    qa_security_auditor: 0.2, integration_engineer: 0.3,
+    documentation_engineer: 0.4, product_analyst: 0.3,
+    cost_analyst: 0.2, automation_engineer: 0.25,
+    release_manager: 0.3, recommendation_analyst: 0.3,
   }
 
   const OPUS_ROLES = new Set(['architect'])
   const OPUS_TASK_TYPES = new Set(['schema', 'design'])
   const requiresOpus = OPUS_ROLES.has(agentRole) && OPUS_TASK_TYPES.has(taskType)
   const resolvedModel = requiresOpus ? MODEL_OPUS : MODEL_SONNET
-  const resolvedMaxTokens = outputType === 'test' || outputType === 'review' ? 1024 : (roleConfig.maxTokens ?? 4096)
 
-  return { ...roleConfig, model: resolvedModel, maxTokens: resolvedMaxTokens, outputType } as RoleConfig
+  const resolvedMaxTokens = (outputType === 'test' || outputType === 'review')
+    ? 1024
+    : (maxTokensByRole[agentRole] ?? 4096)
+
+  return {
+    model: resolvedModel,
+    outputType,
+    maxTokens: resolvedMaxTokens,
+    temperature: tempByRole[agentRole] ?? 0.35,
+    systemPrompt: buildSystemPrompt(agentRole, platformCtx, schemaSnapshot),
+    outputInstructions: outputInstructions[agentRole] ?? `{"summary":"...","output":{"content":"# Output\\n\\n...","format":"markdown"}}`,
+  }
 }
 
 // ── User message builder ──────────────────────────────────────────────────────
 
-function buildUserMessage(payload: JobPayload, roleConfig: RoleConfig): string {
+function buildUserMessage(
+  payload: JobPayload,
+  roleConfig: RoleConfig,
+  platformCtx: PlatformContext,
+  projectName: string,
+): string {
   const lines: string[] = []
   lines.push(`# Task: ${payload.task_name}`)
   lines.push(`**Task ID:** ${payload.task_id}`)
@@ -187,17 +266,23 @@ function buildUserMessage(payload: JobPayload, roleConfig: RoleConfig): string {
     })
   }
 
+  // PX-1: Platform context section — injects domain DNA into every task
   lines.push('## Platform Context')
-  lines.push(`- Project: Build OS (${payload.project_id})`)
-  lines.push('- Stack: Next.js 14 App Router + TypeScript + Supabase + Vercel')
-  lines.push('- Execution: Railway Worker (no timeout constraint)')
+  lines.push(`- Product: ${projectName} (${platformCtx.name})`)
+  lines.push(`- Domain: ${platformCtx.domain}`)
+  lines.push(`- Core Entities: ${platformCtx.entities.join(', ')}`)
+  lines.push(`- Stack: Next.js 14 App Router + TypeScript + Supabase + Vercel`)
+  lines.push(`- Execution: Railway Worker (no timeout constraint)`)
+  if (platformCtx.exampleRoutes.length > 0) {
+    lines.push(`- Example API Routes: ${platformCtx.exampleRoutes.slice(0, 4).join(', ')}`)
+  }
   lines.push('')
 
-  // WS3: Always inject DB schema for code/schema/test tasks to prevent hallucination
+  // WS3: Always inject DB schema for code/schema/test tasks
   const CODE_OUTPUT_TYPES: OutputType[] = ['code', 'schema', 'test']
   if (CODE_OUTPUT_TYPES.includes(roleConfig.outputType)) {
     lines.push('## DB Schema Reference (use ONLY these tables)')
-    lines.push(SCHEMA_SNAPSHOT)
+    lines.push(platformCtx.schemaHint)
     lines.push('')
   }
 
@@ -205,6 +290,42 @@ function buildUserMessage(payload: JobPayload, roleConfig: RoleConfig): string {
   lines.push(roleConfig.outputInstructions)
 
   return lines.join('\n')
+}
+
+// ── PX-1: Fetch project context from DB ───────────────────────────────────────
+
+interface ProjectRecord {
+  id: string
+  name: string
+  description: string | null
+  project_type: string | null
+}
+
+async function fetchProjectContext(
+  admin: ReturnType<typeof createClient>,
+  projectId: string | null,
+): Promise<{ project: ProjectRecord | null; platformCtx: PlatformContext; schemaSnapshot: string }> {
+  if (!projectId) {
+    const platformCtx = getPlatformContext(null)
+    return { project: null, platformCtx, schemaSnapshot: BUILDOS_SCHEMA_SNAPSHOT }
+  }
+
+  const { data: project } = await admin
+    .from('projects')
+    .select('id, name, description, project_type')
+    .eq('id', projectId)
+    .maybeSingle() as { data: ProjectRecord | null }
+
+  const platformCtx = getPlatformContext(project?.project_type)
+
+  // Use platform-specific schema if available, else BuildOS internal schema
+  const schemaSnapshot = platformCtx.schemaHint || BUILDOS_SCHEMA_SNAPSHOT
+
+  console.log(
+    `[processor] Platform context: project_type=${project?.project_type ?? 'unknown'} → ${platformCtx.name}`
+  )
+
+  return { project, platformCtx, schemaSnapshot }
 }
 
 // ── Main processor ────────────────────────────────────────────────────────────
@@ -231,18 +352,20 @@ export async function processJob(
   console.log(`[processor] Starting job ${jobId} task=${payload.task_id} role=${payload.agent_role}`)
 
   try {
-    // WS1 — TIMEOUT FIX: explicit 5-minute timeout prevents Railway HTTP proxy
-    // from killing the connection silently. Previously no timeout was set,
-    // causing the SDK to rely on a platform idle timeout (~90s on Railway).
+    // ── PX-1: Fetch project record + resolve platform context ─────────────
+    const { project, platformCtx, schemaSnapshot } = await fetchProjectContext(
+      admin,
+      payload.project_id ?? null,
+    )
+    const projectName = project?.name ?? platformCtx.name
+
+    // ── Build role config with injected platform context ──────────────────
     const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY, timeout: 300_000 })
-    const roleConfig = getRoleConfig(payload.agent_role, payload.task_type)
-    const userMessage = buildUserMessage(payload, roleConfig)
+    const roleConfig = getRoleConfig(payload.agent_role, payload.task_type, platformCtx, schemaSnapshot)
+    const userMessage = buildUserMessage(payload, roleConfig, platformCtx, projectName)
 
     // WS1 — TIMEOUT FIX: use streaming API instead of one-shot create().
-    // Streaming sends periodic chunks that keep the HTTP connection alive,
-    // preventing Railway's idle connection timeout from triggering on
-    // long-running generations (previously caused ~90s abort errors).
-    console.log(`[processor] Starting Anthropic stream: role=${payload.agent_role} model=${roleConfig.model} maxTokens=${roleConfig.maxTokens}`)
+    console.log(`[processor] Starting Anthropic stream: role=${payload.agent_role} model=${roleConfig.model} maxTokens=${roleConfig.maxTokens} platform=${platformCtx.name}`)
     const stream = anthropic.messages.stream({
       model: roleConfig.model,
       max_tokens: roleConfig.maxTokens,
@@ -283,7 +406,7 @@ export async function processJob(
       completed_at: completedAt,
     }).eq('id', jobId)
 
-    // ── Build callback payload (same shape as n8n sends) ──────────────────
+    // ── Build callback payload ────────────────────────────────────────────
     const callbackPayload: CallbackPayload = {
       correlation_id: payload.correlation_id,
       task_run_id: payload.task_run_id,
@@ -304,7 +427,6 @@ export async function processJob(
     const { ok, error: cbErr } = await signAndPost(payload.callback_url, callbackPayload)
     if (!ok) {
       console.error(`[processor] Callback failed: ${cbErr}`)
-      // Job is complete but callback failed — DLQ already handled in signAndPost
     } else {
       console.log(`[processor] Callback delivered for task=${payload.task_id}`)
     }
@@ -313,14 +435,12 @@ export async function processJob(
     const errorMsg = String(err)
     console.error(`[processor] Job ${jobId} failed:`, errorMsg)
 
-    // Update job_queue → failed
     await admin.from('job_queue').update({
       status: 'failed',
       completed_at: new Date().toISOString(),
       error: errorMsg.slice(0, 1000),
     }).eq('id', jobId)
 
-    // Post failure callback
     const callbackPayload: CallbackPayload = {
       correlation_id: payload.correlation_id,
       task_run_id: payload.task_run_id,
