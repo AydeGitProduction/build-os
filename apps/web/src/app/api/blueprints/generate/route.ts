@@ -291,7 +291,7 @@ async function handleGenerate(req: NextRequest): Promise<NextResponse> {
   // ── 1. Load wizard_conversation ──────────────────────────────────────────
   const { data: conv, error: convErr } = await admin
     .from('wizard_conversations')
-    .select('id, project_id, session_id, collected_fields, readiness')
+    .select('id, project_id, collected_fields, readiness')
     .eq('id', idea_id)
     .single()
 
@@ -507,24 +507,22 @@ async function handleGenerate(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: `Task creation failed: ${taskErr?.message}` }, { status: 500 })
   }
 
-  // ── 10. Update wizard_session → blueprint_ready ───────────────────────────
-  if (conv.session_id) {
-    await admin
-      .from('wizard_sessions')
-      .update({
-        current_step: 'blueprint_ready',
-        status: 'IN_PROGRESS',
-        metadata: {
-          wizard_state: {
-            step: 5,
-            phase: 'blueprint_ready',
-            blueprint_id: blueprint.id,
-            ready_for_build: true,
-          },
+  // ── 10. Update wizard_session → blueprint_ready (lookup by project_id) ───
+  await admin
+    .from('wizard_sessions')
+    .update({
+      current_step: 'blueprint_ready',
+      status: 'IN_PROGRESS',
+      metadata: {
+        wizard_state: {
+          step: 5,
+          phase: 'blueprint_ready',
+          blueprint_id: blueprint.id,
+          ready_for_build: true,
         },
-      })
-      .eq('id', conv.session_id)
-  }
+      },
+    })
+    .eq('project_id', projectId)
 
   // ── 11. Update project → blueprint linked ─────────────────────────────────
   await admin
