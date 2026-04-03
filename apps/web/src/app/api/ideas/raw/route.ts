@@ -107,7 +107,12 @@ async function handleRawIdea(
   const parse = await parseIdeaWithAI(raw_idea_text.trim())
   console.log('[ideas/raw] Parse result:', parse)
 
-  // 2. Create project row with status = "wizard_in_progress"
+  // 2. Resolve workspace_id (required NOT NULL on projects)
+  const workspaceId = userId
+    ? await getWorkspaceForUser(admin, userId)
+    : await getDefaultWorkspace(admin)
+
+  // 3. Create project row with status = "wizard_in_progress"
   const projectSlug = `idea-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const { data: project, error: projectError } = await admin
     .from('projects')
@@ -119,8 +124,7 @@ async function handleRawIdea(
       project_type: parse.idea_category === 'marketplace' ? 'marketplace' : 'saas',
       bootstrap_status: 'not_started',
       ...(userId ? { created_by: userId } : {}),
-      // Link to default workspace if we have a user
-      ...(userId ? { workspace_id: await getWorkspaceForUser(admin, userId) } : {}),
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
     })
     .select('id, name, slug, status, project_type, created_at')
     .single()
@@ -208,8 +212,18 @@ async function getWorkspaceForUser(
       .select('workspace_id')
       .eq('user_id', userId)
       .limit(1)
-      .single()
-    return data?.workspace_id ?? null
+      .maybeSingle()
+    return data?.workspace_id ?? await getDefaultWorkspace(admin)
+  } catch {
+    return getDefaultWorkspace(admin)
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getDefaultWorkspace(admin: any): Promise<string | null> {
+  try {
+    const { data } = await admin.from('workspaces').select('id').limit(1).maybeSingle()
+    return data?.id ?? null
   } catch {
     return null
   }

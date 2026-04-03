@@ -47,6 +47,23 @@ async function handleCreate(
 
   // wizard_sessions.project_id is NOT NULL — create a draft project if none provided
   if (!project_id) {
+    // Resolve workspace_id for this user (required NOT NULL on projects)
+    let workspaceId: string | null = null
+    if (userId) {
+      const { data: wm } = await admin
+        .from('workspace_members')
+        .select('workspace_id')
+        .eq('user_id', userId)
+        .limit(1)
+        .maybeSingle()
+      workspaceId = wm?.workspace_id ?? null
+    }
+    if (!workspaceId) {
+      // Fallback: use first workspace in system
+      const { data: ws } = await admin.from('workspaces').select('id').limit(1).maybeSingle()
+      workspaceId = ws?.id ?? null
+    }
+
     const draftSlug = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const { data: draft, error: draftError } = await admin
       .from('projects')
@@ -57,6 +74,7 @@ async function handleCreate(
         project_type: 'saas',
         bootstrap_status: 'not_started',
         ...(userId ? { created_by: userId } : {}),
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
       })
       .select('id')
       .single()
