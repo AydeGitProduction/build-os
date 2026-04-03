@@ -120,7 +120,7 @@ async function handleRawIdea(
       name: raw_idea_text.trim().slice(0, 80) || 'Untitled Idea',
       slug: projectSlug,
       description: raw_idea_text.trim(),
-      status: 'wizard_in_progress',
+      status: 'draft',
       project_type: parse.idea_category === 'marketplace' ? 'marketplace' : 'saas',
       bootstrap_status: 'not_started',
       ...(userId ? { created_by: userId } : {}),

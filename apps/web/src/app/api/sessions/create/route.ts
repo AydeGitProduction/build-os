@@ -97,7 +97,7 @@ async function handleCreate(
 
   const insertPayload: Record<string, unknown> = {
     project_id,
-    status: 'CREATED',
+    status: 'OPEN',
     current_step: 'idea_input',
     metadata: { wizard_state },
     ...(userId ? { user_id: userId } : {}),
