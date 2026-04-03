@@ -135,7 +135,7 @@ OUTPUT FORMAT:
 }
 \`\`\``,
             task_type:  'schema',
-            agent_role: 'database_engineer',
+            agent_role: 'backend_engineer',
             priority:   'critical',
             order_index: 0,
           },
@@ -557,7 +557,7 @@ OUTPUT FORMAT:
 ]}}
 \`\`\``,
             task_type:  'schema',
-            agent_role: 'database_engineer',
+            agent_role: 'backend_engineer',
             priority:   'high',
             order_index: 2,
           },
