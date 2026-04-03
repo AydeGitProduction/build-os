@@ -260,6 +260,15 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
           status: 'pending',
           estimated_cost_usd: task.estimated_cost_usd || null,
           order_index: task.order_index ?? idx,
+          // B0.3-FIX: WS2 context gate requires non-empty context_payload for code/schema/test tasks.
+          // seedFromBlueprint previously omitted this field → all IRIS-wizard tasks blocked at dispatch.
+          context_payload: {
+            source: 'iris_wizard',
+            epic_title: epic.title || epic.name || '',
+            feature_title: feature.title || feature.name || '',
+            task_description: task.description || '',
+            agent_role: task.agent_role || 'backend_engineer',
+          },
         }
       })
 

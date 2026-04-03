@@ -57,7 +57,7 @@ export async function PATCH(
     }
 
     const body = await request.json()
-    const { status: newStatus, priority, description, notes } = body
+    const { status: newStatus, priority, description, notes, context_payload } = body
 
     // Fetch current task state
     const { data: task } = await supabase
@@ -87,6 +87,8 @@ export async function PATCH(
 
     if (priority)    updates.priority    = priority
     if (description) updates.description = description
+    // B0.3-FIX: allow context_payload backfill for tasks created without it (e.g. IRIS wizard tasks)
+    if (context_payload !== undefined) updates.context_payload = context_payload
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
