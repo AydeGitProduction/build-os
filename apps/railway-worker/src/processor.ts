@@ -323,8 +323,16 @@ async function fetchProjectContext(
 
   const platformCtx = getPlatformContext(project?.project_type)
 
-  // Use platform-specific schema if available, else BuildOS internal schema
-  const schemaSnapshot = platformCtx.schemaHint || BUILDOS_SCHEMA_SNAPSHOT
+  // Use platform-specific schema if the registry has a specific entry for this project_type.
+  // DEFAULT_CONTEXT.schemaHint is a vague fallback ("Use appropriate tables…") — it is truthy
+  // but NOT a real schema. Detect it and use BUILDOS_SCHEMA_SNAPSHOT instead so agents always
+  // get the full table list + FORBIDDEN section rather than hallucinating phantom tables.
+  const hasSpecificSchema = !!(
+    project?.project_type &&
+    platformCtx.schemaHint &&
+    !platformCtx.schemaHint.includes('Use appropriate tables')
+  )
+  const schemaSnapshot = hasSpecificSchema ? platformCtx.schemaHint : BUILDOS_SCHEMA_SNAPSHOT
 
   console.log(
     `[processor] Platform context: project_type=${project?.project_type ?? 'unknown'} → ${platformCtx.name}`
