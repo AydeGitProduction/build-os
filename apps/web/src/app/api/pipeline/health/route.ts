@@ -70,7 +70,23 @@ export async function GET(request: NextRequest) {
       (dlqCount ?? 0) === 0 &&
       recentActivity > 0
 
-    // Specific task details if task_ids provided
+    // Blocked task details for triage
+    const { data: blockedTasks } = await admin
+      .from('tasks')
+      .select('id, title, status, failure_detail, retry_count, updated_at')
+      .eq('status', 'blocked')
+      .order('updated_at', { ascending: false })
+      .limit(20)
+
+    // Awaiting review tasks
+    const { data: awaitingTasks } = await admin
+      .from('tasks')
+      .select('id, title, status, updated_at')
+      .eq('status', 'awaiting_review')
+      .order('updated_at', { ascending: false })
+      .limit(15)
+
+    // Specific task details if task_ids provided (search by title prefix for short IDs)
     let taskDetails: Array<{
       id: string
       title: string
@@ -81,12 +97,12 @@ export async function GET(request: NextRequest) {
     }> = []
 
     if (taskIds.length > 0) {
-      // IDs may be short prefixes (8 chars) — use OR with ilike to match UUID prefix
-      const orFilter = taskIds.map(id => `id.ilike.${id}%`).join(',')
+      // Build a title-based OR filter using task IDs as title keyword search
+      // Also try casting id to text for prefix matching
       const { data: specificTasks } = await admin
         .from('tasks')
         .select('id, title, status, failure_detail, retry_count, updated_at')
-        .or(orFilter)
+        .or(taskIds.map(id => `title.ilike.%${id}%`).join(','))
         .order('updated_at', { ascending: false })
 
       taskDetails = (specificTasks ?? []).map(t => ({
@@ -109,6 +125,18 @@ export async function GET(request: NextRequest) {
       open_blockers:   openBlockers ?? 0,
       pipeline_status: healthy ? 'ACTIVE' : 'DEGRADED',
       deployed_commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ?? 'unknown',
+      blocked_tasks:   (blockedTasks ?? []).map(t => ({
+        id:             t.id.slice(0, 8),
+        title:          t.title.slice(0, 80),
+        failure_detail: (t.failure_detail ?? '').slice(0, 150),
+        retry_count:    t.retry_count ?? 0,
+        updated_at:     t.updated_at,
+      })),
+      awaiting_review_tasks: (awaitingTasks ?? []).map(t => ({
+        id:         t.id.slice(0, 8),
+        title:      t.title.slice(0, 80),
+        updated_at: t.updated_at,
+      })),
     }
 
     if (taskIds.length > 0) {
