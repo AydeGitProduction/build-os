@@ -187,11 +187,16 @@ export async function POST(request: NextRequest) {
   {
     // Remove leading TypeScript/JS single-line comments
     const noComments = raw_output.replace(/^(\/\/[^\n]*\n)+/, '').trim()
-    // Check if content starts with a code fence
-    const fenceMatch = noComments.match(/^```(?:json|typescript|ts|js|javascript)?\s*\n([\s\S]*?)\n?```\s*$/s)
+    // Check if content starts with a code fence.
+    // IMPORTANT: use greedy [\s\S]* (not lazy [\s\S]*?) so we match from the
+    // OUTER opening fence to the LAST closing ```, not the first one encountered.
+    // Lazy matching breaks when agent JSON contains embedded TypeScript code
+    // fences inside "content" strings — the lazy regex stops at the inner ```,
+    // truncating the JSON and causing parse failure → no files committed.
+    const fenceMatch = noComments.match(/^```(?:json|typescript|ts|js|javascript)?\s*\n([\s\S]*)\n?```\s*$/s)
     if (fenceMatch) {
       processedRawOutput = fenceMatch[1].trim()
-      console.log('[agent/generate] Stripped markdown code fence from raw_output')
+      console.log('[agent/generate] Stripped markdown code fence from raw_output (greedy outer-fence match)')
     } else if (noComments !== raw_output) {
       processedRawOutput = noComments
     }
