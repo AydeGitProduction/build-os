@@ -16,7 +16,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk'
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { signAndPost } from './callback'
 import type { JobPayload, CallbackPayload } from './types'
 import { getPlatformContext } from './platform-registry'
@@ -302,7 +302,8 @@ interface ProjectRecord {
 }
 
 async function fetchProjectContext(
-  admin: ReturnType<typeof createClient>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  admin: SupabaseClient<any>,
   projectId: string | null,
 ): Promise<{ project: ProjectRecord | null; platformCtx: PlatformContext; schemaSnapshot: string }> {
   if (!projectId) {
