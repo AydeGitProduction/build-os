@@ -62,7 +62,8 @@ const KNOWN_BUILDOS_TABLES = new Set([
   'blockers', 'workspaces', 'wizard_state',
   // Orchestration
   'orchestration_runs', 'project_settings', 'orchestration_config',
-  // U1-B: Connections & Integrations layer
+  // U1-B: Connections & Integrations layer + Supabase migration tables
+  'schema_registry',  // Supabase integration — tracks schema objects for migration
   'provider_connections', 'project_integrations', 'integration_providers',
   'workspace_connections', 'credentials', 'integration_credentials',
   'integration_scopes', 'integration_assignments',
