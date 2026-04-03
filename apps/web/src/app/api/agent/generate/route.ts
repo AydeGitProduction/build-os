@@ -177,8 +177,40 @@ export async function POST(request: NextRequest) {
   //   1. Extracting a partial JSON block from tables[0].description and appending "}}" to close it
   //   2. Falling back to building a synthetic output from migration_sql / typescript_types fields
   let processedRawOutput = raw_output
+
+  // ── Step 1b-0: Strip markdown code fences and leading comment lines ──────────
+  // Agents sometimes wrap JSON in fences like:
+  //   // src/app/api/task-name/route.ts
+  //   ```json
+  //   {"output":{"files":[...]}}
+  //   ```
+  {
+    // Remove leading TypeScript/JS single-line comments
+    const noComments = raw_output.replace(/^(\/\/[^\n]*\n)+/, '').trim()
+    // Check if content starts with a code fence
+    const fenceMatch = noComments.match(/^```(?:json|typescript|ts|js|javascript)?\s*\n([\s\S]*?)\n?```\s*$/s)
+    if (fenceMatch) {
+      processedRawOutput = fenceMatch[1].trim()
+      console.log('[agent/generate] Stripped markdown code fence from raw_output')
+    } else if (noComments !== raw_output) {
+      processedRawOutput = noComments
+    }
+    // Last resort: extract the first JSON object containing "output" key
+    if (processedRawOutput === raw_output && raw_output.includes('"output"')) {
+      const jsonMatch = raw_output.match(/(\{[\s\S]*?"output"[\s\S]*\})\s*$/)
+      if (jsonMatch) {
+        try {
+          JSON.parse(jsonMatch[1])
+          processedRawOutput = jsonMatch[1]
+          console.log('[agent/generate] Extracted JSON block via regex fallback')
+        } catch { /* not valid JSON */ }
+      }
+    }
+  }
+
   try {
-    const outerParsed = JSON.parse(raw_output)
+    const rawForOuterParse = processedRawOutput
+    const outerParsed = JSON.parse(rawForOuterParse)
     if (
       outerParsed &&
       typeof outerParsed === 'object' &&
