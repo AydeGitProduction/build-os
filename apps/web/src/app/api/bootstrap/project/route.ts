@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
       .from('deployment_targets')
       .select('provider, target_config, status, health_url')
       .eq('project_id', project_id)
-      .eq('status', 'active')
+      .eq('status', 'live')
 
     return NextResponse.json({
       success: true,
@@ -292,7 +292,7 @@ export async function POST(request: NextRequest) {
       project_id,
       environment_id: envId,
       provider:       'vercel',
-      status:         'active',
+      status:         'live',
       health_url:     vercelDeployUrl,
       target_config: {
         vercel_project_id:    vercelResult.project.id,
