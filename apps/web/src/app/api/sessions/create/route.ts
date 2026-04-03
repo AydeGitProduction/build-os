@@ -43,7 +43,30 @@ async function handleCreate(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: any,
 ) {
-  const { project_id } = body
+  let { project_id } = body
+
+  // wizard_sessions.project_id is NOT NULL — create a draft project if none provided
+  if (!project_id) {
+    const draftSlug = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const { data: draft, error: draftError } = await admin
+      .from('projects')
+      .insert({
+        name: 'Draft Project',
+        slug: draftSlug,
+        status: 'draft',
+        project_type: 'saas',
+        bootstrap_status: 'not_started',
+        ...(userId ? { created_by: userId } : {}),
+      })
+      .select('id')
+      .single()
+
+    if (draftError || !draft) {
+      return NextResponse.json({ error: `Draft project creation failed: ${draftError?.message}` }, { status: 500 })
+    }
+    project_id = draft.id
+    console.log('[sessions/create] Created draft project:', project_id)
+  }
 
   // Build initial wizard state
   const wizard_state = {
@@ -55,11 +78,11 @@ async function handleCreate(
   }
 
   const insertPayload: Record<string, unknown> = {
+    project_id,
     status: 'CREATED',
     current_step: 'idea_input',
     metadata: { wizard_state },
     ...(userId ? { user_id: userId } : {}),
-    ...(project_id ? { project_id } : {}),
   }
 
   const { data: session, error } = await admin
