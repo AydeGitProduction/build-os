@@ -70,13 +70,45 @@ export async function POST(
     let repoName: string | undefined
     let repoInstallationId: string | undefined
 
-    const { data: deployTarget } = await admin
+    // BUG-6 FIX: resolve the production environment ID first to avoid picking a
+    // legacy deployment_targets row that lacks github_repo_fullname.  When there
+    // are multiple rows (.maybeSingle() with >1 row returns null), the scaffold
+    // previously fell back to the monorepo (AydeGitProduction/build-os) and got
+    // a 403 because the AydeGitBuildOS installation cannot access that repo.
+    const { data: prodEnv } = await admin
+      .from('project_environments')
+      .select('id')
+      .eq('project_id', params.id)
+      .eq('is_production', true)
+      .maybeSingle()
+
+    // Primary: filter by production environment_id (matches bootstrap-created row)
+    let deployTargetQuery = admin
       .from('deployment_targets')
       .select('target_config')
       .eq('project_id', params.id)
       .eq('provider', 'vercel')
       .eq('status', 'live')
-      .maybeSingle()
+
+    if (prodEnv?.id) {
+      deployTargetQuery = deployTargetQuery.eq('environment_id', prodEnv.id)
+    }
+
+    let { data: deployTarget } = await deployTargetQuery.maybeSingle()
+
+    // Fallback: if no row found with env filter, take newest row (covers legacy projects)
+    if (!deployTarget) {
+      const { data: fallbackTarget } = await admin
+        .from('deployment_targets')
+        .select('target_config')
+        .eq('project_id', params.id)
+        .eq('provider', 'vercel')
+        .eq('status', 'live')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      deployTarget = fallbackTarget
+    }
 
     if (deployTarget?.target_config) {
       const cfg = deployTarget.target_config as Record<string, unknown>
