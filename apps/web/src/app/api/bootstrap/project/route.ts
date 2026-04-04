@@ -342,6 +342,55 @@ export async function POST(request: NextRequest) {
   await setStatus(admin, project_id, 'ready_for_architect')
   await writeLog(admin, project_id, 'ready', 'completed', 'Bootstrap complete â project ready for architect')
 
+  // ============================================================
+  // STEP 6 — Base scaffold (Phase 5)
+  // Commits package.json, next.config.mjs, tsconfig.json, globals.css,
+  // middleware, Sidebar, dashboard page, etc. to the project repo so
+  // that `vercel build` passes before any AI task runs.
+  // Non-fatal: if scaffold fails, bootstrap is still considered complete.
+  // ============================================================
+  blog('step_6_scaffold', 'Triggering base scaffold commit for project repo')
+  await setStatus(admin, project_id, 'scaffolding')
+  await writeLog(admin, project_id, 'scaffold', 'started', `Committing base scaffold to ${githubResult.repoFullName}`)
+
+  try {
+    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL
+      || process.env.NEXTAUTH_URL
+      || `https://${process.env.VERCEL_URL}`
+      || 'http://localhost:3000'
+
+    const scaffoldRes = await fetch(`${appBaseUrl}/api/projects/${project_id}/scaffold`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Buildos-Secret': process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || '',
+      },
+    })
+
+    if (scaffoldRes.ok) {
+      const scaffoldData = (await scaffoldRes.json()) as { data?: { files_committed?: number; commit_sha?: string; target_repo?: string; skipped?: boolean } }
+      const d = scaffoldData.data ?? {}
+      blog('step_6_scaffold', 'SUCCESS', {
+        files_committed: d.files_committed,
+        commit_sha:      d.commit_sha,
+        target_repo:     d.target_repo,
+        skipped:         d.skipped,
+      })
+      await writeLog(admin, project_id, 'scaffold', 'completed', `${d.files_committed ?? '?'} files → ${d.commit_sha ?? 'n/a'}`)
+    } else {
+      const errText = await scaffoldRes.text().catch(() => 'unknown error')
+      blog('step_6_scaffold', `WARN — scaffold HTTP ${scaffoldRes.status} (non-fatal)`, { error: errText.slice(0, 200) })
+      await writeLog(admin, project_id, 'scaffold', 'failed', `HTTP ${scaffoldRes.status}: ${errText.slice(0, 200)}`)
+    }
+  } catch (scaffoldErr) {
+    const msg = scaffoldErr instanceof Error ? scaffoldErr.message : String(scaffoldErr)
+    blog('step_6_scaffold', `WARN — scaffold threw (non-fatal): ${msg}`)
+    await writeLog(admin, project_id, 'scaffold', 'failed', msg)
+  }
+
+  // Scaffold complete (or skipped non-fatally) — set final status
+  await setStatus(admin, project_id, 'ready_for_architect')
+
   blog('complete', 'Bootstrap COMPLETE', {
     project_id,
     project_name:     project.name,
@@ -378,6 +427,6 @@ export async function POST(request: NextRequest) {
       deploy_url:   vercelDeployUrl,
       created:      vercelResult.created,
     },
-    steps_completed: ['init', 'github', 'vercel', 'linking', 'ready'],
+    steps_completed: ['init', 'github', 'vercel', 'linking', 'ready', 'scaffold'],
   })
 }
