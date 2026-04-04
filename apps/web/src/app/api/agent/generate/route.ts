@@ -559,6 +559,11 @@ export async function POST(request: NextRequest) {
                 repo: dtRepo,
                 noPathPrefix: true,
               }
+              // B0.3b FIX: set canonicalIntegrationRepoUrl from deployment_targets so
+              // resolveExpectedTarget() computes the correct expected target.
+              // Without this, expected falls back to GITHUB_REPO_OWNER/GITHUB_REPO_NAME
+              // (the platform monorepo) causing FALSE_DONE on every per-project commit.
+              canonicalIntegrationRepoUrl = `https://github.com/${dtOwner}/${dtRepo}`
             }
           }
         }
