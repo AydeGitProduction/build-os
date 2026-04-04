@@ -511,6 +511,18 @@ export async function POST(request: NextRequest) {
           platform_tables: platformTables,
         }
         const { result: qaResult } = await runFullQAPipeline(admin, qaInput)
+  // WS2 FIX: persist guardian_verdict + qa_score to task_runs
+  await admin
+    .from('task_runs')
+    .update({
+      guardian_verdict: qaResult.verdict,
+      qa_score: qaResult.score,
+    })
+    .eq('id', task_run_id)
+    .then(({ error: _gvErr }: { error: unknown }) => {
+      if (_gvErr) console.warn('[agent/output] WS2: guardian_verdict update failed (non-fatal):', _gvErr)
+      else console.log(`[agent/output] WS2: guardian_verdict=${qaResult.verdict} score=${qaResult.score} written to task_run ${task_run_id}`)
+    })
 
         // Submit verdict to existing qa/verdict route to handle task status transition
         const verdictForSubmission = qaResult.verdict === 'RETRY_REQUIRED' ? 'fail' : qaResult.verdict.toLowerCase()

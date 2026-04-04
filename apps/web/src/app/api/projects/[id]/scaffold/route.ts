@@ -150,10 +150,17 @@ export async function POST(
     console.log(`[scaffold] Committed: ${commitResult.commitSha}`)
 
     // ── Mark scaffold committed ───────────────────────────────────────────────
-    await admin
+    const { error: scaffoldUpdateErr } = await admin
       .from('projects')
       .update({ scaffold_committed_at: new Date().toISOString() } as Record<string, unknown>)
       .eq('id', params.id)
+
+    if (scaffoldUpdateErr) {
+      console.error(`[scaffold] WS3: scaffold_committed_at update FAILED: ${scaffoldUpdateErr.message}`)
+      // Non-fatal: commit succeeded. DB flag is stale but logged for manual patch.
+    } else {
+      console.log(`[scaffold] WS3: scaffold_committed_at written OK for project ${params.id}`)
+    }
 
     // ── Write audit log ───────────────────────────────────────────────────────
     await admin.from('audit_logs').insert({

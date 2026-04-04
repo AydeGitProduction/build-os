@@ -23,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { provisionGitHubRepo } from '@/lib/github-provision'
-import { provisionVercelProject } from '@/lib/vercel-provision'
+import { provisionVercelProject, injectVercelEnvVars } from '@/lib/vercel-provision'
 
 // âââ Admin Supabase client âââââââââââââââââââââââââââââââââââââââââââââââââââ
 function getAdmin() {
@@ -221,6 +221,42 @@ export async function POST(request: NextRequest) {
       vercelProjectName: vercelResult.project.name,
       created:           vercelResult.created,
     })
+    // WS1 FIX: inject Supabase env vars so Vercel builds can compile
+    try {
+      const _buildEnvVars = [
+        { key: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL || '', target: ['production','preview','development'] },
+        { key: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '', target: ['production','preview','development'] },
+        { key: 'SUPABASE_SERVICE_ROLE_KEY', value: process.env.SUPABASE_SERVICE_ROLE_KEY || '', target: ['production','preview'] },
+      ].filter(e => e.value)
+      if (_buildEnvVars.length > 0) {
+        await injectVercelEnvVars(vercelResult.project.id, _buildEnvVars)
+        blog('step_3_vercel', `WS1: injected ${_buildEnvVars.length} build env vars into Vercel project`)
+      } else {
+        blog('step_3_vercel', 'WS1: WARN — no Supabase env vars found on BuildOS host; Vercel builds will fail')
+      }
+    } catch (_envErr) {
+      blog('step_3_vercel', 'WS1: WARN — env var injection failed (non-fatal)', {
+        error: _envErr instanceof Error ? _envErr.message : String(_envErr),
+      })
+    }
+    // WS1 FIX: inject Supabase env vars so Vercel builds can compile
+    try {
+      const _buildEnvVars = [
+        { key: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL || '', target: ['production','preview','development'] },
+        { key: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '', target: ['production','preview','development'] },
+        { key: 'SUPABASE_SERVICE_ROLE_KEY', value: process.env.SUPABASE_SERVICE_ROLE_KEY || '', target: ['production','preview'] },
+      ].filter(e => e.value)
+      if (_buildEnvVars.length > 0) {
+        await injectVercelEnvVars(vercelResult.project.id, _buildEnvVars)
+        blog('step_3_vercel', `WS1: injected ${_buildEnvVars.length} build env vars into Vercel project`)
+      } else {
+        blog('step_3_vercel', 'WS1: WARN — no Supabase env vars found on BuildOS host; Vercel builds will fail')
+      }
+    } catch (_envErr) {
+      blog('step_3_vercel', 'WS1: WARN — env var injection failed (non-fatal)', {
+        error: _envErr instanceof Error ? _envErr.message : String(_envErr),
+      })
+    }
   } catch (vercelErr) {
     const msg = vercelErr instanceof Error ? vercelErr.message : String(vercelErr)
     blog('step_3_vercel', 'FAIL', { error: msg })
