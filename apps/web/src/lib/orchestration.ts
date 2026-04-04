@@ -445,6 +445,33 @@ export async function runOrchestrationTick(
 
   for (const task of readyTasks) {
     try {
+      // ── BUG-5 guard: skip if task already has an active task_run ──────────
+      // An active run means n8n already received this task and is executing it.
+      // Dispatching again would create a duplicate run, corrupt cost tracking,
+      // and leave the task stuck in 'dispatched' state permanently.
+      //
+      // Non-terminal statuses that indicate an active run:
+      //   started, running, processing — n8n/Railway is executing
+      //   dispatched  — webhook fired but agent hasn't called back yet
+      //
+      // We do NOT include: completed, failed, cancelled, error, timed_out
+      // (those are terminal — a new dispatch after terminal is valid retry)
+      const { data: activeRuns, error: activeRunErr } = await admin
+        .from('task_runs')
+        .select('id, status')
+        .eq('task_id', task.id)
+        .in('status', ['started', 'running', 'processing', 'dispatched'])
+        .limit(1)
+
+      if (activeRunErr) {
+        console.warn(`[orchestration] active-run check failed for task ${task.id} (non-fatal):`, activeRunErr.message)
+      } else if (activeRuns && activeRuns.length > 0) {
+        console.log(
+          `[orchestration] Task ${task.id} already has active run ${activeRuns[0].id} (status=${activeRuns[0].status}) — skipping dispatch (BUG-5 guard)`
+        )
+        continue
+      }
+
       const idempotencyKey = `orch-tick-${projectId}-${task.id}-${Date.now()}`
 
       const res = await fetch(`${baseUrl}/api/dispatch/task`, {

@@ -336,6 +336,52 @@ export async function POST(request: NextRequest) {
   await writeLog(admin, project_id, 'linking', 'completed', `github=${githubResult.repoUrl} vercel=${vercelDeployUrl}`)
 
   // ============================================================
+  // STEP 4b — Canonicalize project_integrations (BUG-4 fix)
+  // Upsert project_integrations with the ACTUAL GitHub repo fullname
+  // from the GitHub API response. This overwrites any stale URL that
+  // may have been written by the legacy /api/projects/[id]/provision
+  // route (which ran a separate repo creation with a different name).
+  //
+  // Without this step, agent/generate reads project_integrations and
+  // finds a different repo than what scaffold committed to — causing
+  // agent code to land in a separate repo with no package.json and
+  // Vercel builds to ERROR.
+  //
+  // Using UPSERT on (project_id, provider_id) so this is idempotent.
+  // ============================================================
+  blog('step_4b_canonicalize', 'Canonicalizing project_integrations with actual GitHub repo', {
+    actual_repo: githubResult.repoFullName,
+  })
+  try {
+    const { error: intErr } = await admin
+      .from('project_integrations')
+      .upsert({
+        project_id,
+        provider_id:   '05e2c85b-69f5-4eb4-b2d0-cf243b2f2838', // GitHub provider
+        credential_id: '4109f41e-a483-4624-8b12-6eb020b90399', // system GitHub credential
+        status:        'active',
+        environment_map: {
+          github_repo_id:   githubResult.repoId,
+          github_repo_name: githubResult.repoName,
+          github_repo_url:  githubResult.repoUrl, // ACTUAL url from GitHub API response
+        },
+        created_by:  '614c0632-50a0-44fb-b6e8-8563d08fa1c3',
+        updated_at:  new Date().toISOString(),
+      }, { onConflict: 'project_id,provider_id' })
+
+    if (intErr) {
+      blog('step_4b_canonicalize', 'WARN — project_integrations upsert failed (non-fatal)', { error: intErr.message })
+    } else {
+      blog('step_4b_canonicalize', 'OK — project_integrations canonical repo set', { repo: githubResult.repoFullName })
+    }
+  } catch (canonErr) {
+    blog('step_4b_canonicalize', 'WARN — canonicalize threw (non-fatal)', {
+      error: canonErr instanceof Error ? canonErr.message : String(canonErr),
+    })
+  }
+
+
+  // ============================================================
   // STEP 5 â Ready
   // ============================================================
   blog('step_5_ready', 'Setting bootstrap_status = ready_for_architect')
