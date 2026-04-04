@@ -550,6 +550,7 @@ export async function POST(request: NextRequest) {
             .maybeSingle()
 
           const repoFullName = dtTarget?.target_config?.github_repo_fullname as string | undefined
+          const repoUrl = dtTarget?.target_config?.github_repo_url as string | undefined
           if (repoFullName) {
             const [dtOwner, dtRepo] = repoFullName.split('/')
             if (dtOwner && dtRepo) {
@@ -559,6 +560,11 @@ export async function POST(request: NextRequest) {
                 repo: dtRepo,
                 noPathPrefix: true,
               }
+              // B0.3b FIX: set canonicalIntegrationRepoUrl from deployment_targets so
+              // resolveExpectedTarget() computes the correct expected target.
+              // Without this, expected falls back to GITHUB_REPO_OWNER/GITHUB_REPO_NAME
+              // (the platform monorepo) causing FALSE_DONE on every per-project commit.
+              canonicalIntegrationRepoUrl = repoUrl ?? `https://github.com/${dtOwner}/${dtRepo}`
             }
           }
         }

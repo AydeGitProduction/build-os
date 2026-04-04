@@ -300,7 +300,9 @@ export async function verifyFilesInCommitRepo(
     const fullPath = pathPrefix ? `${pathPrefix}${filePath}` : filePath
     try {
       const res = await ghFetch(
-        `/repos/${owner}/${repo}/contents/${encodeURIComponent(fullPath)}?ref=${branch}`,
+        // Encode each path segment individually so slashes are preserved as path separators.
+        // encodeURIComponent on the whole path would encode '/' → '%2F' causing 404s.
+        `/repos/${owner}/${repo}/contents/${fullPath.split('/').map(encodeURIComponent).join('/')}?ref=${branch}`,
         token,
         'GET',
       )
