@@ -169,6 +169,55 @@ export async function findUnlockableTasks(
 }
 
 /**
+ * BUG-3 FIX — Root-task unlock pass.
+ *
+ * buildos_find_unlockable_tasks() (migration 014) has two unlock paths:
+ *   Path 1: order_index > 0, no explicit deps — uses sibling order model
+ *   Path 2: tasks that have explicit task_dependencies entries, all deps completed
+ *
+ * Neither path handles "root tasks" — tasks with order_index = 0 AND no entries
+ * in task_dependencies.  These tasks have no prerequisites by definition and
+ * should be immediately runnable, but the DB function skips them entirely.
+ *
+ * This function finds those root tasks so runDependencyUnlock can unlock them.
+ */
+async function findRootTaskIds(
+  admin: SupabaseClient,
+  projectId: string,
+  excludeIds: string[] = []
+): Promise<string[]> {
+  // Fetch all pending tasks with order_index = 0
+  const { data: candidates } = await admin
+    .from('tasks')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('status', 'pending')
+    .eq('order_index', 0)
+
+  if (!candidates || candidates.length === 0) return []
+
+  const candidateIds = candidates.map((t: any) => t.id as string)
+  const newCandidates = candidateIds.filter(id => !excludeIds.includes(id))
+  if (newCandidates.length === 0) return []
+
+  // Exclude any that have explicit task_dependencies entries (they need dep-tracking)
+  const { data: depsExist } = await admin
+    .from('task_dependencies')
+    .select('task_id')
+    .in('task_id', newCandidates)
+
+  const withDeps = new Set((depsExist || []).map((d: any) => d.task_id as string))
+  const rootIds = newCandidates.filter(id => !withDeps.has(id))
+
+  if (rootIds.length > 0) {
+    console.log(
+      `[orchestration] BUG-3 root-task pass: ${rootIds.length} unlockable root task(s) found for project ${projectId}`
+    )
+  }
+  return rootIds
+}
+
+/**
  * Mark a set of tasks as 'ready' (pending → ready transition).
  * Returns IDs actually updated.
  */
@@ -194,20 +243,30 @@ export async function unlockTasks(
 /**
  * Full dependency unlock pass: find all unlockable tasks and mark them ready.
  * Called after any task completes. Also checks if features/epics are now complete.
+ *
+ * Combines two unlock sources:
+ *   1. buildos_find_unlockable_tasks() DB function (order-index model + explicit deps)
+ *   2. BUG-3 root-task pass for order_index=0, no-deps tasks the DB function misses
  */
 export async function runDependencyUnlock(
   admin: SupabaseClient,
   projectId: string,
   completedTaskId?: string
 ): Promise<string[]> {
-  // 1. Find all tasks that can be unlocked
+  // 1. Find all tasks that can be unlocked via the DB function
   const unlockable = await findUnlockableTasks(admin, projectId)
-  const idsToUnlock = unlockable.map(u => u.task_id)
+  const idsFromDb = unlockable.map(u => u.task_id)
 
-  // 2. Unlock them
+  // 2. BUG-3 FIX: supplementary root-task pass for order_index=0, no-deps tasks
+  //    that the DB function (migration 014) excludes due to `AND t.order_index > 0`.
+  const rootIds = await findRootTaskIds(admin, projectId, idsFromDb)
+
+  const idsToUnlock = [...new Set([...idsFromDb, ...rootIds])]
+
+  // 3. Unlock them
   const unlocked = await unlockTasks(admin, projectId, idsToUnlock)
 
-  // 3. Check if any features/epics are now complete (all tasks done)
+  // 4. Check if any features/epics are now complete (all tasks done)
   if (completedTaskId) {
     await syncFeatureAndEpicStatus(admin, projectId, completedTaskId)
   }
