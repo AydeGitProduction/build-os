@@ -23,7 +23,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { provisionGitHubRepo } from '@/lib/github-provision'
-import { provisionVercelProject, injectVercelEnvVars } from '@/lib/vercel-provision'
+import { provisionVercelProject } from '@/lib/vercel-provision'
+// WS1/WS3/WS4 — Auth reliability + canonical state + env template
+import { upsertIntegrationState } from '@/lib/integration-state'
+import { injectVercelEnvTemplate } from '@/lib/vercel-env-template'
 
 // âââ Admin Supabase client âââââââââââââââââââââââââââââââââââââââââââââââââââ
 function getAdmin() {
@@ -221,42 +224,6 @@ export async function POST(request: NextRequest) {
       vercelProjectName: vercelResult.project.name,
       created:           vercelResult.created,
     })
-    // WS1 FIX: inject Supabase env vars so Vercel builds can compile
-    try {
-      const _buildEnvVars = [
-        { key: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL || '', target: ['production','preview','development'] },
-        { key: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '', target: ['production','preview','development'] },
-        { key: 'SUPABASE_SERVICE_ROLE_KEY', value: process.env.SUPABASE_SERVICE_ROLE_KEY || '', target: ['production','preview'] },
-      ].filter(e => e.value)
-      if (_buildEnvVars.length > 0) {
-        await injectVercelEnvVars(vercelResult.project.id, _buildEnvVars)
-        blog('step_3_vercel', `WS1: injected ${_buildEnvVars.length} build env vars into Vercel project`)
-      } else {
-        blog('step_3_vercel', 'WS1: WARN — no Supabase env vars found on BuildOS host; Vercel builds will fail')
-      }
-    } catch (_envErr) {
-      blog('step_3_vercel', 'WS1: WARN — env var injection failed (non-fatal)', {
-        error: _envErr instanceof Error ? _envErr.message : String(_envErr),
-      })
-    }
-    // WS1 FIX: inject Supabase env vars so Vercel builds can compile
-    try {
-      const _buildEnvVars = [
-        { key: 'NEXT_PUBLIC_SUPABASE_URL', value: process.env.NEXT_PUBLIC_SUPABASE_URL || '', target: ['production','preview','development'] },
-        { key: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', value: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '', target: ['production','preview','development'] },
-        { key: 'SUPABASE_SERVICE_ROLE_KEY', value: process.env.SUPABASE_SERVICE_ROLE_KEY || '', target: ['production','preview'] },
-      ].filter(e => e.value)
-      if (_buildEnvVars.length > 0) {
-        await injectVercelEnvVars(vercelResult.project.id, _buildEnvVars)
-        blog('step_3_vercel', `WS1: injected ${_buildEnvVars.length} build env vars into Vercel project`)
-      } else {
-        blog('step_3_vercel', 'WS1: WARN — no Supabase env vars found on BuildOS host; Vercel builds will fail')
-      }
-    } catch (_envErr) {
-      blog('step_3_vercel', 'WS1: WARN — env var injection failed (non-fatal)', {
-        error: _envErr instanceof Error ? _envErr.message : String(_envErr),
-      })
-    }
   } catch (vercelErr) {
     const msg = vercelErr instanceof Error ? vercelErr.message : String(vercelErr)
     blog('step_3_vercel', 'FAIL', { error: msg })
@@ -416,6 +383,75 @@ export async function POST(request: NextRequest) {
     })
   }
 
+
+
+  // ============================================================
+  // STEP 4c — WS3: Upsert canonical integration state (single source of truth)
+  // Writes github_installation_id + github_repo_fullname + vercel_project_id
+  // into project_integration_state. All downstream reads (preflight, agent, QA)
+  // use this table — never project_integrations directly.
+  // ============================================================
+  blog('step_4c_canonical_state', 'Writing canonical integration state', {
+    github_repo: githubResult.repoFullName,
+    vercel_project: vercelResult.project.id,
+  })
+  try {
+    await upsertIntegrationState(
+      {
+        project_id,
+        // WS2/WS5: write the PROJECT installation ID — the same one github-provision
+        // used to create this repo. Downstream reads (scaffold, agent, preflight) use
+        // this stored value. NEVER writes GITHUB_INSTALLATION_ID (platform path).
+        github_installation_id:
+          process.env.PROJECT_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID ?? '',
+        github_repo_fullname: githubResult.repoFullName,
+        vercel_project_id: vercelResult.project.id,
+        env_template_version: '0.0.0', // updated after env injection below
+      },
+      admin,
+    )
+    blog('step_4c_canonical_state', 'OK — canonical integration state written')
+  } catch (csErr) {
+    blog('step_4c_canonical_state', 'WARN — canonical state upsert failed (non-fatal)', {
+      error: csErr instanceof Error ? csErr.message : String(csErr),
+    })
+  }
+
+  // ============================================================
+  // STEP 4d — WS4: Inject Vercel env template
+  // Applies NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  // SUPABASE_SERVICE_ROLE_KEY, BUILDOS_INTERNAL_SECRET into the new Vercel project.
+  // No hidden dashboard-only dependencies.
+  // ============================================================
+  blog('step_4d_env_inject', 'Injecting Vercel env template', {
+    vercel_project: vercelResult.project.id,
+  })
+  try {
+    const envResult = await injectVercelEnvTemplate(vercelResult.project.id, project_id)
+    blog('step_4d_env_inject', envResult.success ? 'OK' : 'PARTIAL', {
+      injected: envResult.injected,
+      skipped: envResult.skipped,
+      failed: envResult.failed,
+      missing: envResult.missing,
+      templateVersion: envResult.templateVersion,
+    })
+    if (envResult.success) {
+      await upsertIntegrationState(
+        { project_id, env_template_version: envResult.templateVersion },
+        admin,
+      ).catch(() => null)
+    } else if (envResult.missing.length > 0) {
+      blog('step_4d_env_inject', 'WARN — missing required env vars for injection', {
+        missing: envResult.missing,
+      })
+      await writeLog(admin, project_id, 'env_injection', 'failed',
+        \`Missing platform env vars: \${envResult.missing.join(', ')}\`)
+    }
+  } catch (envErr) {
+    blog('step_4d_env_inject', 'WARN — env injection threw (non-fatal)', {
+      error: envErr instanceof Error ? envErr.message : String(envErr),
+    })
+  }
 
   // ============================================================
   // STEP 5 â Ready
