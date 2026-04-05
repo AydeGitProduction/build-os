@@ -247,26 +247,27 @@ export async function POST(request: NextRequest) {
   // ============================================================
   blog('step_3b_link', 'Linking GitHub repo to Vercel project for auto-deploy', {
     vercelProjectId: vercelResult.project.id,
-    repoName:        githubResult.repoName,
+    repoFullName:    githubResult.repoFullName,
     repoId:          githubResult.repoId,
   })
   const linkResult = await linkVercelGitHubRepo(
     vercelResult.project.id,
-    githubResult.repoName,
+    githubResult.repoFullName,
     githubResult.repoId,
     process.env.VERCEL_TEAM_ID,
   )
   if (linkResult.linked) {
     blog('step_3b_link', 'SUCCESS — GitHub repo linked; Vercel will auto-deploy on push')
-    await writeLog(admin, project_id, 'vercel', 'linked', `GitHub repo linked: ${githubResult.repoFullName}`)
+    await writeLog(admin, project_id, 'vercel_link', 'completed', `GitHub repo linked: ${githubResult.repoFullName}`)
   } else if (linkResult.skipped) {
     blog('step_3b_link', 'SKIPPED', { reason: linkResult.skipReason })
+    await writeLog(admin, project_id, 'vercel_link', 'failed', `GitHub repo link skipped: ${linkResult.skipReason ?? 'unknown'}`)
   } else {
     blog('step_3b_link', 'WARN — link failed (non-fatal, auto-deploy unavailable)', {
       error:  linkResult.error,
       status: linkResult.status,
     })
-    await writeLog(admin, project_id, 'vercel', 'warning', `GitHub repo link failed: ${linkResult.error ?? 'unknown'}`)
+    await writeLog(admin, project_id, 'vercel_link', 'failed', `GitHub repo link failed: ${linkResult.error ?? 'unknown'}`)
   }
 
   // Store Vercel deployment target
