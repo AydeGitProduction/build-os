@@ -819,6 +819,88 @@ export interface EnvVarInput {
   type?: "plain" | "secret" | "encrypted";
 }
 
+// ---------------------------------------------------------------------------
+// GitHub Repo Linking
+// ---------------------------------------------------------------------------
+
+export interface LinkVercelGitHubRepoResult {
+  linked: boolean;
+  skipped?: boolean;
+  skipReason?: string;
+  error?: string;
+  status?: number;
+}
+
+/**
+ * Links a GitHub repository to an existing Vercel project so that pushes
+ * automatically trigger Vercel deployments.
+ *
+ * Uses `gitCredentialId: "auto"` so Vercel resolves the correct GitHub App
+ * installation credential for the repo's organization automatically.
+ *
+ * Non-fatal by design: returns a result object rather than throwing, so
+ * callers can log a warning and continue on failure.
+ *
+ * @param vercelProjectId  The Vercel project ID (e.g. "prj_xxx")
+ * @param repoName         Short repo name only, no org prefix (e.g. "buildos-my-project")
+ * @param repoId           Numeric GitHub repository ID
+ * @param teamId           Optional Vercel team ID
+ */
+export async function linkVercelGitHubRepo(
+  vercelProjectId: string,
+  repoName: string,
+  repoId: number,
+  teamId?: string
+): Promise<LinkVercelGitHubRepoResult> {
+  const token = process.env.VERCEL_TOKEN ?? process.env.VERCEL_API_TOKEN;
+  if (!token) {
+    return { linked: false, skipped: true, skipReason: "VERCEL_TOKEN not set" };
+  }
+  if (!vercelProjectId || !repoName || !repoId) {
+    return {
+      linked: false,
+      skipped: true,
+      skipReason: `Missing required params: vercelProjectId=${vercelProjectId}, repoName=${repoName}, repoId=${repoId}`,
+    };
+  }
+
+  const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : "";
+  const url = `${VERCEL_API_BASE}/v9/projects/${encodeURIComponent(vercelProjectId)}/link${query}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "github",
+        repo: repoName,
+        repoId,
+        gitCredentialId: "auto",
+      }),
+    });
+
+    if (response.ok || response.status === 200 || response.status === 204) {
+      console.log(
+        `[vercel-provision] Linked GitHub repo "${repoName}" (id=${repoId}) to Vercel project ${vercelProjectId}`
+      );
+      return { linked: true };
+    }
+
+    const body = await response.text();
+    console.warn(
+      `[vercel-provision] GitHub repo link non-fatal failure for ${vercelProjectId} (${response.status}): ${body}`
+    );
+    return { linked: false, error: body, status: response.status };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[vercel-provision] GitHub repo link threw: ${msg}`);
+    return { linked: false, error: msg };
+  }
+}
+
 /**
  * Injects environment variables into a Vercel project.
  *
