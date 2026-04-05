@@ -141,19 +141,24 @@ export async function commitFilesToGitHub(
   // ── 1. Config validation ───────────────────────────────────────────────────
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
-  // Support both naming conventions: GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
+  // WS3: PROJECT PATH — prefer canonical project override (from deployment_targets /
+  // project_integration_state), then PROJECT_* env vars, then legacy shim.
+  // NEVER falls back to GITHUB_INSTALLATION_ID (platform path) or GITHUB_REPO_OWNER
+  // (platform monorepo) unless the caller explicitly passes a repoOverride.
   const installationId = repoOverride?.installationId
-    ?? process.env.GITHUB_INSTALLATION_ID
-    ?? process.env.GITHUB_APP_INSTALLATION_ID
-  const owner = repoOverride?.owner ?? process.env.GITHUB_REPO_OWNER
+    ?? process.env.PROJECT_GITHUB_INSTALLATION_ID
+    ?? process.env.GITHUB_APP_INSTALLATION_ID    // legacy shim only
+  const owner = repoOverride?.owner
+    ?? process.env.PROJECT_GITHUB_OWNER
+    ?? process.env.GITHUB_ORG                    // legacy shim only
   const repo = repoOverride?.repo ?? process.env.GITHUB_REPO_NAME
   const branch = (repoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH) || 'main'
 
   const missing = [
     !appId && 'GITHUB_APP_ID',
     !rawKey && 'GITHUB_APP_PRIVATE_KEY',
-    !installationId && 'GITHUB_INSTALLATION_ID (or GITHUB_APP_INSTALLATION_ID)',
-    !owner && 'GITHUB_REPO_OWNER',
+    !installationId && 'PROJECT_GITHUB_INSTALLATION_ID (or GITHUB_APP_INSTALLATION_ID)',
+    !owner && 'PROJECT_GITHUB_OWNER (or GITHUB_ORG)',
     !repo && 'GITHUB_REPO_NAME',
   ].filter(Boolean)
 
@@ -263,7 +268,9 @@ export async function verifyFilesInCommitRepo(
 ): Promise<{ allVerified: boolean; results: Array<{ path: string; verified: boolean; notes: string }> }> {
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
-  const installationId = process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID
+  // WS3: PROJECT PATH — verify uses same installation as commit (project install, not platform)
+  const installationId = process.env.PROJECT_GITHUB_INSTALLATION_ID
+    ?? process.env.GITHUB_APP_INSTALLATION_ID    // legacy shim only
 
   // If GitHub App not configured, we cannot verify — but we also cannot SKIP silently.
   // Return unverified so the caller can decide whether to block or log.
@@ -273,7 +280,7 @@ export async function verifyFilesInCommitRepo(
       results: filePaths.map(p => ({
         path: p,
         verified: false,
-        notes: `[B0.3b] GitHub App not configured (GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_INSTALLATION_ID missing). Cannot verify actual commit delivery.`,
+        notes: `[B0.3b] GitHub App not configured (GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/PROJECT_GITHUB_INSTALLATION_ID missing). Cannot verify actual commit delivery.`,
       })),
     }
   }
