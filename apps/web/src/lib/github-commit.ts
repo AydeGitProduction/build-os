@@ -154,6 +154,13 @@ export async function commitFilesToGitHub(
   const repo = repoOverride?.repo ?? process.env.GITHUB_REPO_NAME
   const branch = (repoOverride?.branch ?? process.env.GITHUB_REPO_BRANCH) || 'main'
 
+  // P7.6: Canonical [github-config] log — visible in every commit operation
+  console.log(
+    `[github-config] path=project owner=${owner ?? 'MISSING'} ` +
+    `repo=${repo ?? 'MISSING'} installation_id=${installationId ?? 'MISSING'} ` +
+    `source=${repoOverride?.installationId ? 'repoOverride' : process.env.PROJECT_GITHUB_INSTALLATION_ID ? 'PROJECT_GITHUB_INSTALLATION_ID' : 'GITHUB_APP_INSTALLATION_ID(legacy)'}`
+  )
+
   const missing = [
     !appId && 'GITHUB_APP_ID',
     !rawKey && 'GITHUB_APP_PRIVATE_KEY',
