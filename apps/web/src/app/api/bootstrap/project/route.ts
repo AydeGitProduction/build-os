@@ -445,7 +445,7 @@ export async function POST(request: NextRequest) {
         missing: envResult.missing,
       })
       await writeLog(admin, project_id, 'env_injection', 'failed',
-        \`Missing platform env vars: \${envResult.missing.join(', ')}\`)
+        `Missing platform env vars: ${envResult.missing.join(', ')}`)
     }
   } catch (envErr) {
     blog('step_4d_env_inject', 'WARN — env injection threw (non-fatal)', {
