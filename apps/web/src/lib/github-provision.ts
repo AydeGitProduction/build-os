@@ -3,19 +3,20 @@
 // Production GitHub provisioning service.
 // Creates isolated per-project repositories under the configured GitHub org.
 //
-// Auth strategy (in priority order):
-//   1. GitHub App (RS256 JWT) — if GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY are set
-//   2. Personal Access Token  — if GITHUB_TOKEN is set
+// Auth strategy — PROJECT PATH ONLY (see lib/github-path-config.ts):
+//   1. GitHub App (RS256 JWT) — PROJECT_GITHUB_INSTALLATION_ID
+//   2. Personal Access Token  — GITHUB_TOKEN (legacy fallback only)
 //
-// Required env vars:
-//   GITHUB_APP_ID           — App ID (numeric string)
-//   GITHUB_APP_PRIVATE_KEY  — PEM-encoded RSA private key (full, not base64)
-//   GITHUB_INSTALLATION_ID  — Installation ID for the org
-//   GITHUB_ORG              — Org / user where repos are created
+// Required env vars (PROJECT PATH):
+//   GITHUB_APP_ID                    — App ID (numeric string)
+//   GITHUB_APP_PRIVATE_KEY           — PEM-encoded RSA private key (full, not base64)
+//   PROJECT_GITHUB_INSTALLATION_ID   — Installation ID for the project org (120987701)
+//   PROJECT_GITHUB_OWNER             — Org where project repos are created (AydeGitBuildOS)
 //
-// OR (PAT fallback):
-//   GITHUB_TOKEN            — PAT with repo + admin:org scope
-//   GITHUB_ORG              — Org / user where repos are created
+// Deprecated shims (backward compat only — do not use in new code):
+//   GITHUB_APP_INSTALLATION_ID → fallback for PROJECT_GITHUB_INSTALLATION_ID
+//   GITHUB_ORG                 → fallback for PROJECT_GITHUB_OWNER
+//   GITHUB_TOKEN               → legacy PAT fallback
 
 import { createPrivateKey, sign as cryptoSign } from "crypto";
 
@@ -215,9 +216,10 @@ async function resolveGitHubToken(): Promise<string> {
   // Fall back to GitHub App installation token (RS256 JWT exchange)
   const appId = process.env.GITHUB_APP_ID;
   const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-  // Support both GITHUB_INSTALLATION_ID and GITHUB_APP_INSTALLATION_ID
+  // PROJECT PATH: prefer PROJECT_GITHUB_INSTALLATION_ID → GITHUB_APP_INSTALLATION_ID
+  // NEVER reads GITHUB_INSTALLATION_ID (that is the platform path)
   const installationId =
-    process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID;
+    process.env.PROJECT_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID;
 
   if (appId && privateKey && installationId) {
     // normalizePrivateKeyPem handles \n sequences, bare base64, etc.
@@ -287,8 +289,9 @@ async function withRetry<T>(
 export async function provisionGitHubRepo(
   project: GitHubProvisionInput
 ): Promise<GitHubRepoInfo> {
-  // Support GITHUB_ORG (preferred), GITHUB_REPO_OWNER (legacy name in Vercel env)
-  const org = process.env.GITHUB_ORG ?? process.env.GITHUB_REPO_OWNER;
+  // PROJECT PATH: prefer PROJECT_GITHUB_OWNER → GITHUB_ORG (deprecated shim)
+  // NEVER reads GITHUB_REPO_OWNER (that is the platform path)
+  const org = process.env.PROJECT_GITHUB_OWNER ?? process.env.GITHUB_ORG;
   if (!org) {
     throw new GitHubProvisionError(
       "[github-provision] GITHUB_ORG (or GITHUB_REPO_OWNER) environment variable is not set."

@@ -838,7 +838,10 @@ export async function POST(request: NextRequest) {
         await logCommitDelivery(adminForCommit, {
           task_id,
           project_id,
-          repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+          // WS3: log canonical project repo, not platform monorepo fallback
+          repo_name: projectRepoOverride?.owner && projectRepoOverride?.repo
+            ? `${projectRepoOverride.owner}/${projectRepoOverride.repo}`
+            : `unknown/unknown (canonical project repo not resolved)`,
           branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
           target_path: filePath,
           stub_created: false,
@@ -864,7 +867,10 @@ export async function POST(request: NextRequest) {
       const logId = await logCommitDelivery(adminForCommit, {
         task_id,
         project_id,
-        repo_name: `${process.env.GITHUB_REPO_OWNER ?? ''}/${process.env.GITHUB_REPO_NAME ?? ''}`,
+        // WS3: log canonical project repo, not platform monorepo fallback
+          repo_name: projectRepoOverride?.owner && projectRepoOverride?.repo
+            ? `${projectRepoOverride.owner}/${projectRepoOverride.repo}`
+            : `unknown/unknown (canonical project repo not resolved)`,
         branch_name: process.env.GITHUB_REPO_BRANCH ?? 'main',
         target_path: filePath,
         stub_created: false,

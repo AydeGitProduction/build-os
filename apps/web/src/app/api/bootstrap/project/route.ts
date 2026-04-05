@@ -399,8 +399,11 @@ export async function POST(request: NextRequest) {
     await upsertIntegrationState(
       {
         project_id,
+        // WS2/WS5: write the PROJECT installation ID — the same one github-provision
+        // used to create this repo. Downstream reads (scaffold, agent, preflight) use
+        // this stored value. NEVER writes GITHUB_INSTALLATION_ID (platform path).
         github_installation_id:
-          process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID ?? '',
+          process.env.PROJECT_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID ?? '',
         github_repo_fullname: githubResult.repoFullName,
         vercel_project_id: vercelResult.project.id,
         env_template_version: '0.0.0', // updated after env injection below

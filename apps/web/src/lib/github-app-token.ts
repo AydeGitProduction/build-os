@@ -122,8 +122,11 @@ export async function mintInstallationToken(cfg: GitHubAuthConfig): Promise<stri
 function loadAppConfig(): GitHubAuthConfig | null {
   const appId = process.env.GITHUB_APP_ID
   const rawKey = process.env.GITHUB_APP_PRIVATE_KEY
+  // WS4: PLATFORM PATH — github-app-token.ts is used by admin validation routes and
+  // platform-level Build OS monorepo operations. It reads PLATFORM_GITHUB_INSTALLATION_ID.
+  // NEVER reads PROJECT_GITHUB_INSTALLATION_ID or GITHUB_APP_INSTALLATION_ID.
   const installationId =
-    process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID
+    process.env.PLATFORM_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_INSTALLATION_ID
 
   if (!appId || !rawKey || !installationId) return null
 

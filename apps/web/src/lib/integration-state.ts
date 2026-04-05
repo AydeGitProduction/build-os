@@ -202,8 +202,10 @@ export async function syncIntegrationStateFromLegacy(
     .eq('status', 'live')
     .maybeSingle()
 
+  // WS5: sync must use PROJECT installation ID — the one that can write to project repos.
+  // NEVER reads GITHUB_INSTALLATION_ID (platform path).
   const ghInstallId =
-    (process.env.GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID) || ''
+    (process.env.PROJECT_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID) || ''
   const ghRepoFullname =
     (piRow?.environment_map as { github_repo_url?: string })?.github_repo_url
       ? extractFullname(
