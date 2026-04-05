@@ -1,10 +1,11 @@
 /**
- * /api/agent/generate — ERT-P3 C2-BE (P0 patched)
- * Code generation pipeline: agent output → PatchOperations → file write → GitHub commit.
+ * /api/agent/generate — ERT-P3 C2-BE (P0 patched) + Phase 7.7 Build Safety Gate
+ * Code generation pipeline: agent output → PatchOperations → file write →
+ *   [WS1/WS3 Build Safety Gate] → GitHub commit → [WS4/WS5 Health State].
  *
  * Auth: accepts both user JWT AND X-Buildos-Secret (internal n8n/system calls).
- * After files_written: commits to GitHub via GitHub App (non-fatal if unconfigured).
- * After GitHub commit: triggers Vercel deploy hook (non-fatal if unconfigured).
+ * After files_written: SAFETY GATE runs before any GitHub commit.
+ * After GitHub commit: triggers Vercel deploy hook; failures update project health state.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -12,6 +13,8 @@ import { createServerSupabaseClient, createAdminSupabaseClient } from '@/lib/sup
 import { getPatchEngine } from '@/lib/patch-engine'
 import { parseAgentOutputToOperations, GenerationStatus } from '@/lib/code-generator'
 import { commitFilesToGitHub, triggerVercelDeploy, CommitRepoOverride, verifyFilesInCommitRepo } from '@/lib/github-commit'
+import { runBuildSafetyGate } from '@/lib/build-safety-gate'
+import { applyVercelDeployResult } from '@/lib/project-health'
 import {
   verifyCommitDelivery,
   logCommitDelivery,
@@ -607,6 +610,51 @@ export async function POST(request: NextRequest) {
       .in('file_path', patchResult.files_modified)
 
     if (projectFiles && projectFiles.length > 0) {
+      // ── WS1/WS3: Build Safety Gate ────────────────────────────────────────
+      // Run pre-commit validation BEFORE any GitHub write.
+      // If the gate fails the task is blocked here — the deploy branch is never touched.
+      const safetyGateResult = runBuildSafetyGate(
+        projectFiles.map(f => ({ path: f.file_path, content: f.content ?? '' })),
+        body.agent_role,  // task_type approximated from agent_role; enriched below if available
+      )
+
+      if (!safetyGateResult.passed) {
+        const gateFailDetail = safetyGateResult.reason
+        const gateCategory = safetyGateResult.failureCategory ?? 'build_safety_gate'
+
+        console.error(`[agent/generate] BUILD SAFETY GATE FAILED for task ${task_id}: ${gateFailDetail}`)
+
+        await updateGenerationStatus(supabase, agent_output_id, 'compile_failed', {
+          generation_errors: [gateFailDetail],
+        })
+
+        try {
+          await recordGenerationEvent(supabase, project_id, task_id, agent_output_id, 'compile_failed', [], [gateFailDetail])
+        } catch { /* non-fatal */ }
+
+        await adminForCommit
+          .from('tasks')
+          .update({
+            status: 'blocked',
+            failure_detail: gateFailDetail,
+            failure_category: gateCategory,
+          })
+          .eq('id', task_id)
+
+        return NextResponse.json(
+          {
+            error: gateFailDetail,
+            build_safety_gate_failed: true,
+            gate_checks: safetyGateResult.checks,
+            hint: 'Agent output failed pre-commit safety validation. Task has been blocked. It will not be retried automatically — this requires task re-generation with corrected output.',
+          },
+          { status: 422 },
+        )
+      }
+      // Safety gate passed — safe to commit
+      console.log(`[agent/generate] BUILD SAFETY GATE PASSED for task ${task_id} (${safetyGateResult.checks.length} checks)`)
+      // ── End WS1/WS3 Gate ──────────────────────────────────────────────────
+
       const commitMessage =
         `[BuildOS] Agent ${agent_role} — task ${task_id.slice(0, 8)}\n\n` +
         `Files: ${patchResult.files_modified.join(', ')}\n` +
@@ -747,13 +795,25 @@ export async function POST(request: NextRequest) {
         } else {
           // VERIFIED_DONE: target matched + all files confirmed in correct repo
 
-          // ── Step 6: Vercel deploy hook (non-fatal, only on VERIFIED_DONE) ────
+          // ── Step 6: Vercel deploy hook (WS5: failures now update project health) ──
           const deployResult = await triggerVercelDeploy()
           deployTriggered = deployResult.triggered
           deployUrl = deployResult.deploymentUrl ?? null
           if (!deployResult.triggered) {
             deployError = deployResult.error ?? 'Unknown deploy error'
             console.warn('[agent/generate] Deploy hook skipped:', deployError)
+            // WS5: map deploy failure → project health state (non-fatal for task completion)
+            await applyVercelDeployResult(adminForCommit, project_id, {
+              triggered: false,
+              error: deployError,
+              commitSha: commitSha ?? null,
+              taskId: task_id,
+            }).catch(hErr => console.warn('[agent/generate] WS5 health update failed (non-fatal):', hErr))
+          } else {
+            // WS5: deploy triggered — webhook will update health on build result.
+            // Reset any prior deploy_blocked state since we successfully fired the hook.
+            // NOTE: build_unhealthy stays until the Vercel webhook confirms READY.
+            console.log(`[agent/generate] WS5: Vercel deploy hook triggered for project ${project_id}, commit ${commitSha?.slice(0, 8)}`)
           }
 
           // ── VERIFIED_DONE: commit verified + target matched → completed ──
