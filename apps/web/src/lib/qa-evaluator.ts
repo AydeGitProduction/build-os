@@ -1,9 +1,9 @@
 /**
- * Block G10: Real QA Evaluator — Fail-by-Default Multi-Layer Validation
+ * Block G10: Real QA Evaluator â Fail-by-Default Multi-Layer Validation
  *
  * G10 REBUILD: Replaces pattern-matching rubber-stamp with evidence-backed checks.
- * Core change: FAIL-BY-DEFAULT — if QA cannot prove correctness, verdict = FAIL.
- * ANY check that is explicitly false → FAIL immediately (no auto-pass path).
+ * Core change: FAIL-BY-DEFAULT â if QA cannot prove correctness, verdict = FAIL.
+ * ANY check that is explicitly false â FAIL immediately (no auto-pass path).
  *
  * Multi-layer checks:
  *   A) compilation_passed:     TypeScript syntax / error-marker check
@@ -12,12 +12,12 @@
  *   D) requirement_match_passed: output matches task objective
  *
  * Verdict rules (G10):
- *   ANY layer === false → FAIL
- *   ALL non-null layers === true → PASS (score ≥ PASS_THRESHOLD)
- *   score in [RETRY_THRESHOLD, PASS_THRESHOLD) → RETRY_REQUIRED
- *   otherwise → FAIL
+ *   ANY layer === false â FAIL
+ *   ALL non-null layers === true â PASS (score â¥ PASS_THRESHOLD)
+ *   score in [RETRY_THRESHOLD, PASS_THRESHOLD) â RETRY_REQUIRED
+ *   otherwise â FAIL
  *
- * LIMITATIONS (per QA-Gate-Protocol.md §13):
+ * LIMITATIONS (per QA-Gate-Protocol.md Â§13):
  * - tsc --noEmit cannot run on raw text in Vercel serverless; pattern-based analysis used.
  * - DB schema validation uses known table list; cannot query live schema at eval time.
  * - Code is not executed; runtime behavior cannot be verified.
@@ -27,7 +27,7 @@
 
 import { SupabaseClient } from '@supabase/supabase-js'
 
-// ── Task type classification ────────────────────────────────────────────────
+// ââ Task type classification ââââââââââââââââââââââââââââââââââââââââââââââââ
 
 const CODE_TASK_TYPES = new Set([
   'code', 'schema', 'test', 'implementation', 'migration',
@@ -37,9 +37,21 @@ const CODE_AGENT_ROLES = new Set([
   'frontend_engineer', 'backend_engineer', 'infrastructure_engineer',
 ])
 
-// ── Known BuildOS database tables (RULE-27 schema validation) ────────────────
+// ââ Task types that use SCAFFOLD evaluation mode (P7.6) âââââââââââââââââââââââ
+// Scaffold tasks create project structure â they do NOT reference DB tables,
+// do NOT have route/export contracts, and MUST NOT be blocked by RULE-27.
+const SCAFFOLD_TASK_TYPES = new Set([
+  'scaffold', 'system_init', 'init', 'project_init', 'bootstrap',
+])
+
+// ââ Task types that use TEST evaluation mode (P7.6) âââââââââââââââââââââââââââ
+const TEST_TASK_TYPES = new Set([
+  'test', 'spec', 'unit_test', 'integration_test',
+])
+
+// ââ Known BuildOS database tables (RULE-27 schema validation) ââââââââââââââââ
 // Used to detect invalid table references in agent output.
-// Any .from('name') or INSERT INTO name referencing a non-existent table → FAIL.
+// Any .from('name') or INSERT INTO name referencing a non-existent table â FAIL.
 
 const KNOWN_BUILDOS_TABLES = new Set([
   // Core pipeline
@@ -63,7 +75,7 @@ const KNOWN_BUILDOS_TABLES = new Set([
   // Orchestration
   'orchestration_runs', 'project_settings', 'orchestration_config',
   // U1-B: Connections & Integrations layer + Supabase migration tables
-  'schema_registry',  // Supabase integration — tracks schema objects for migration
+  'schema_registry',  // Supabase integration â tracks schema objects for migration
   'provider_connections', 'project_integrations', 'integration_providers',
   'workspace_connections', 'credentials', 'integration_credentials',
   'integration_scopes', 'integration_assignments',
@@ -74,7 +86,7 @@ const KNOWN_BUILDOS_TABLES = new Set([
   // Misc
   'profiles', 'user_profiles', 'workspace_members', 'workspace_invites',
   'migration_ledger', 'api_keys',
-  // Synced from BUILDOS_SCHEMA_SNAPSHOT (Railway) — tables Railway agents are told exist
+  // Synced from BUILDOS_SCHEMA_SNAPSHOT (Railway) â tables Railway agents are told exist
   // Multi-tenant / membership
   'organizations', 'organization_members', 'project_members',
   // Project & blueprint metadata
@@ -96,7 +108,87 @@ const KNOWN_BUILDOS_TABLES = new Set([
   'jsonb_output_schemas',
 ])
 
-// ── WS1 HARDENING: Forbidden packages — permanent stack discipline ────────────
+// ââ WS1 Phase 6.2: Schema replacement map â actionable QA corrections ââââââââ
+// When agent output references an unknown table, this map provides the correct
+// BuildOS table to use. Enables WRONG_SCHEMA_WITH_FIX classification so the
+// system can auto-requeue the task with the corrected suggestion instead of
+// just emitting a generic FAIL that requires manual override (WA-2).
+//
+// Key   = what the agent incorrectly used
+// Value = what the agent should have used instead
+
+const TABLE_REPLACEMENT_MAP: Record<string, string> = {
+  // task execution
+  agent_jobs: 'task_runs',
+  jobs: 'task_runs',
+  job_runs: 'task_runs',
+  run_logs: 'task_runs',
+  execution_logs: 'audit_logs',
+  pipeline_runs: 'orchestration_runs',
+  pipeline_tasks: 'tasks',
+  agent_tasks: 'tasks',
+  // agent output
+  task_results: 'agent_outputs',
+  agent_results: 'agent_outputs',
+  execution_results: 'agent_outputs',
+  outputs: 'agent_outputs',
+  // integrations / connections
+  connections: 'provider_connections',
+  integrations: 'project_integrations',
+  providers: 'integration_providers',
+  // QA
+  qa_checks: 'qa_verdicts',
+  qa_records: 'qa_results',
+  quality_checks: 'qa_verdicts',
+  // governance
+  overrides: 'manual_override_log',
+  override_log: 'manual_override_log',
+  events: 'task_events',
+  // locks / idempotency
+  locks: 'resource_locks',
+  task_locks: 'resource_locks',
+  // users / profiles
+  users_profiles: 'profiles',
+  user_settings: 'project_settings',
+  app_settings: 'project_settings',
+  // blockers
+  task_blockers: 'blockers',
+  project_blockers: 'blockers',
+  errors: 'incidents',
+  failures: 'incidents',
+  // delivery / commits
+  delivery_logs: 'commit_delivery_logs',
+  commit_logs: 'commit_delivery_logs',
+  github_commits: 'commit_delivery_logs',
+  task_deliveries: 'task_delivery_gates',
+  deliveries: 'task_delivery_gates',
+  checkpoints: 'delivery_checkpoints',
+  // project meta
+  recommendations: 'recommendation_items',
+  tech_stack: 'project_tech_stack_items',
+  stack_items: 'project_tech_stack_items',
+  environments: 'project_environments',
+  files: 'project_files',
+  // membership
+  members: 'organization_members',
+  invites: 'workspace_invites',
+}
+
+// ââ WS1 Phase 6.2: Fail classification constants âââââââââââââââââââââââââââââ
+// Returned in QAEvaluationResult.fail_classification to enable auto-requeue logic.
+
+export type QAFailClassification =
+  | 'WRONG_SCHEMA_WITH_FIX'   // unknown table but known replacement exists â auto-requeue
+  | 'WRONG_SCHEMA_NO_FIX'     // unknown table, no replacement known â manual review
+  | 'WRONG_STACK'             // forbidden package import
+  | 'EMPTY_OUTPUT'            // agent produced nothing
+  | 'TOO_SHORT'               // output below minimum length
+  | 'NO_CODE_STRUCTURE'       // output lacks TS/JS keywords
+  | 'CONTRACT_VIOLATION'      // missing export / HTTP method
+  | 'REQUIREMENT_MISMATCH'    // key terms missing from output
+  | null                      // PASS or no specific classification
+
+// ââ WS1 HARDENING: Forbidden packages â permanent stack discipline ââââââââââââ
 // Any agent output IMPORTING these packages is an automatic FAIL (WRONG_STACK).
 // These packages are NOT installed and MUST NOT be used in this codebase.
 // Correct alternatives: @supabase/ssr, createAdminSupabaseClient from @/lib/supabase/server
@@ -115,7 +207,7 @@ const FORBIDDEN_IMPORT_PATTERNS: Array<[string, RegExp]> = [
   ['prisma/@prisma/client', /require\s*\(\s*['"]@?prisma/],
   ['PrismaClient', /new\s+PrismaClient\s*\(/],
   ['prisma.', /\bprisma\.(user|post|session|account|project)\./],  // prisma ORM method calls
-  // Supabase auth-helpers (legacy — replaced by @supabase/ssr)
+  // Supabase auth-helpers (legacy â replaced by @supabase/ssr)
   ['@supabase/auth-helpers-nextjs', /from\s+['"]@supabase\/auth-helpers/],
   ['@supabase/auth-helpers-nextjs', /require\s*\(\s*['"]@supabase\/auth-helpers/],
   ['createClientComponentClient', /\bcreateClientComponentClient\s*\(/],
@@ -136,7 +228,7 @@ function checkForbiddenPackages(output: string): {
   return { hasForbidden: detected.length > 0, detected }
 }
 
-// ── WS2 HARDENING: Protected files — prevent agent overwrite ─────────────────
+// ââ WS2 HARDENING: Protected files â prevent agent overwrite âââââââââââââââââ
 // If agent output explicitly names these files as "create" or "replace" targets,
 // flag as PROTECTED_FILE_VIOLATION. Agents must never rewrite these.
 
@@ -148,7 +240,7 @@ const PROTECTED_FILES = [
   'lib/types/index.ts',
 ]
 
-// ── G10: Failure markers that indicate compilation/runtime errors ─────────────
+// ââ G10: Failure markers that indicate compilation/runtime errors âââââââââââââ
 
 const COMPILATION_FAILURE_MARKERS = [
   'SyntaxError:',
@@ -173,8 +265,8 @@ const COMPILATION_FAILURE_MARKERS = [
 ]
 
 // Minimum output lengths to pass (G10: stricter thresholds)
-const MIN_CODE_LENGTH = 300      // Raised from 200 — real code must be substantial
-const MIN_NON_CODE_LENGTH = 150  // Raised from 100 — non-code must show real work
+const MIN_CODE_LENGTH = 300      // Raised from 200 â real code must be substantial
+const MIN_NON_CODE_LENGTH = 150  // Raised from 100 â non-code must show real work
 
 // Score thresholds
 const PASS_THRESHOLD = 70
@@ -186,9 +278,12 @@ const EVALUATOR_MODEL = 'buildos-qa-evaluator-v2'
 // Escalation: if retry_count >= this, create incident linkage
 const ESCALATION_RETRY_THRESHOLD = 2
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ââ Types ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 export type QAVerdict = 'PASS' | 'FAIL' | 'RETRY_REQUIRED' | 'BLOCKED'
+
+// P7.6: Evaluation mode â returned with every result
+export type QAEvaluationMode = 'scaffold' | 'feature' | 'test'
 
 export interface QAEvaluationInput {
   task_id: string
@@ -210,7 +305,7 @@ export interface QAEvaluationResult {
   qa_type: 'code' | 'non_code'
   compilation_passed: boolean | null
   contract_check_passed: boolean | null
-  schema_check_passed: boolean | null        // G10: NEW — RULE-27 DB table validation
+  schema_check_passed: boolean | null        // G10: NEW â RULE-27 DB table validation
   requirement_match_passed: boolean | null
   notes: string
   evidence_summary: string
@@ -219,17 +314,23 @@ export interface QAEvaluationResult {
   feedback_for_task: string
   suggestion_for_task: string
   escalate_to_incident: boolean
+  // WS1 Phase 6.2: actionable correction fields
+  fail_classification: QAFailClassification  // enables auto-requeue when fix is deterministic
+  schema_corrections: Record<string, string> // { wrongTable: 'correctTable' } for auto-fix
+  // P7.6: evaluation mode and skipped rules
+  mode_used: QAEvaluationMode    // 'scaffold' | 'feature' | 'test'
+  skipped_rules: string[]        // rules not applied due to evaluation mode
 }
 
-// ── G10: Extract DB table references from output text ────────────────────────
+// ââ G10: Extract DB table references from output text ââââââââââââââââââââââââ
 // Matches patterns like:
-//   .from('tableName')         — Supabase client
-//   .from("tableName")         — Supabase client (double quotes)
-//   INSERT INTO tableName      — SQL
-//   SELECT ... FROM tableName  — SQL
-//   UPDATE tableName           — SQL
-//   DELETE FROM tableName      — SQL
-//   admin.from('tableName')    — admin client
+//   .from('tableName')         â Supabase client
+//   .from("tableName")         â Supabase client (double quotes)
+//   INSERT INTO tableName      â SQL
+//   SELECT ... FROM tableName  â SQL
+//   UPDATE tableName           â SQL
+//   DELETE FROM tableName      â SQL
+//   admin.from('tableName')    â admin client
 
 function extractTableReferences(output: string): string[] {
   const tables = new Set<string>()
@@ -247,7 +348,7 @@ function extractTableReferences(output: string): string[] {
     tables.add(m[1])
   }
 
-  // G10 FIX v8: SQL pattern table extraction DISABLED — too many false positives.
+  // G10 FIX v8: SQL pattern table extraction DISABLED â too many false positives.
   // PostgreSQL functions (jsonb_each_text, unnest), system tables (pg_constraint,
   // information_schema), variable names, and common English words all pattern-match
   // against SQL keywords. Only Supabase .from('table') is reliable enough.
@@ -308,7 +409,7 @@ function extractTableReferences(output: string): string[] {
   return Array.from(tables)
 }
 
-// ── G10: Validate table references against known BuildOS schema ───────────────
+// ââ G10: Validate table references against known BuildOS schema âââââââââââââââ
 
 function checkSchemaReferences(
   output: string,
@@ -319,21 +420,26 @@ function checkSchemaReferences(
   referenced_tables: string[]
   unknown_tables: string[]
   detail: string
+  // WS1 Phase 6.2: replacements for auto-requeue when fix is deterministic
+  corrections: Record<string, string>  // { wrongTable: correctTable }
+  has_deterministic_fix: boolean       // true when ALL unknown tables have a known replacement
 } {
   const referenced = extractTableReferences(output)
 
   if (referenced.length === 0) {
-    // No DB references found — schema check not applicable
+    // No DB references found â schema check not applicable
     return {
       passed: null,
       referenced_tables: [],
       unknown_tables: [],
-      detail: 'No DB table references detected in output — schema check skipped',
+      detail: 'No DB table references detected in output â schema check skipped',
+      corrections: {},
+      has_deterministic_fix: false,
     }
   }
 
   // PX-2: Merge platform-specific tables with the BuildOS core tables so that
-  // non-saas projects (ai_newsletter, marketplace, crm, …) don't get RULE-27
+  // non-saas projects (ai_newsletter, marketplace, crm, â¦) don't get RULE-27
   // false-positives for their own domain tables (subscribers, campaigns, etc.)
   const allowedTables = platformTables
     ? new Set([...KNOWN_BUILDOS_TABLES, ...platformTables])
@@ -342,11 +448,35 @@ function checkSchemaReferences(
   const unknown = referenced.filter(t => !allowedTables.has(t.toLowerCase()))
 
   if (unknown.length > 0) {
+    // WS1 Phase 6.2: look up actionable replacements for each unknown table
+    const corrections: Record<string, string> = {}
+    const noFix: string[] = []
+    for (const table of unknown) {
+      const replacement = TABLE_REPLACEMENT_MAP[table.toLowerCase()]
+      if (replacement) {
+        corrections[table] = replacement
+      } else {
+        noFix.push(table)
+      }
+    }
+    const has_deterministic_fix = noFix.length === 0 && Object.keys(corrections).length > 0
+
+    // Build actionable detail message
+    const correctionHints = Object.entries(corrections)
+      .map(([wrong, correct]) => `use '${correct}' instead of '${wrong}'`)
+      .join('; ')
+    const noFixHints = noFix.length > 0 ? ` No replacement known for: ${noFix.join(', ')}.` : ''
+    const classTag = has_deterministic_fix ? '[WRONG_SCHEMA_WITH_FIX]' : '[WRONG_SCHEMA_NO_FIX]'
+
     return {
       passed: false,
       referenced_tables: referenced,
       unknown_tables: unknown,
-      detail: `FAIL schema: Output references unknown DB table(s): ${unknown.join(', ')}. Known tables must be used (RULE-27).`,
+      detail: correctionHints
+        ? `FAIL schema ${classTag}: Unknown table(s): ${unknown.join(', ')}. Actionable fix: ${correctionHints}.${noFixHints}`
+        : `FAIL schema ${classTag}: Output references unknown DB table(s): ${unknown.join(', ')}. Known tables must be used (RULE-27).${noFixHints}`,
+      corrections,
+      has_deterministic_fix,
     }
   }
 
@@ -355,13 +485,27 @@ function checkSchemaReferences(
     referenced_tables: referenced,
     unknown_tables: [],
     detail: `PASS schema: All ${referenced.length} referenced table(s) are valid BuildOS tables: ${referenced.join(', ')}`,
+    corrections: {},
+    has_deterministic_fix: false,
   }
 }
 
-// ── G10: Main evaluator ───────────────────────────────────────────────────────
+// ââ G10: Main evaluator âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
   const { task_type, agent_role, title, description, raw_output, retry_count, platform_tables } = input
+
+  // ââ P7.6: Determine evaluation mode FIRST âââââââââââââââââââââââââââââââââ
+  // Scaffold tasks get SCAFFOLD mode â no schema/contract checks.
+  // Detection uses task_type AND title keywords because wizard-generated scaffold
+  // tasks may arrive as type='implementation' with title="Initialize Next.js 14...".
+  const isScaffoldTask = SCAFFOLD_TASK_TYPES.has(task_type)
+    || /\b(initialize|scaffold|init(?:ialize)?)\b.*\b(project|app|next\.?js|repo|codebase|typescript)\b/i.test(title)
+    || /\b(create|setup|bootstrap)\b.*\b(next\.?js|typescript|project|app|scaffold)\b/i.test(title)
+  const isTestTask = !isScaffoldTask && TEST_TASK_TYPES.has(task_type)
+  const evaluationMode: QAEvaluationMode = isScaffoldTask ? 'scaffold'
+    : isTestTask ? 'test'
+    : 'feature'
 
   // Determine task category
   const isCodeTask = CODE_TASK_TYPES.has(task_type) || CODE_AGENT_ROLES.has(agent_role)
@@ -369,26 +513,158 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
 
   const output = (raw_output || '').trim()
 
-  // ── G10 FAIL-BY-DEFAULT: empty or missing output → immediate FAIL ──────────
+  // ââ P7.6: SCAFFOLD MODE â context-aware evaluation âââââââââââââââââââââââââââ
+  // Scaffold tasks build project structure (files, routes, configs).
+  // MUST NOT be evaluated against feature-level rules:
+  //   SKIP: RULE-27 schema check  (no DB tables in scaffold output)
+  //   SKIP: contract/export check (no route contract required)
+  //   KEEP: forbidden packages    (no forbidden imports ever allowed)
+  //   KEEP: compilation check     (no syntax errors allowed)
+  //   KEEP: requirement match     (output must address task subject)
 
-  if (!output || output.length === 0) {
-    return buildResult({
-      qa_type,
-      verdict: 'FAIL',
-      score: 0,
-      compilation_passed: isCodeTask ? false : null,
-      contract_check_passed: null,
-      schema_check_passed: null,
-      requirement_match_passed: false,
-      noteLines: ['FAIL[G10]: Output is empty. No content produced by agent. FAIL-BY-DEFAULT applies.'],
-      evidence: { empty: true, length: 0, fail_by_default: true },
-      feedback: 'QA FAIL (G10): Agent produced empty output. Task must be re-attempted.',
-      suggestion: 'Ensure the agent produces actual content. Verify the task description is actionable.',
-      retry_count,
-    })
+  if (isScaffoldTask) {
+    const skippedRules = ['RULE-27 schema validation', 'contract/export check']
+    const scaffoldNotes: string[] = [
+      `[P7.6] SCAFFOLD mode â task_type=${task_type}, evaluation_mode=scaffold`,
+      `[P7.6] Skipped rules: ${skippedRules.join(', ')}`,
+    ]
+
+    // Empty output check
+    if (!output || output.length === 0) {
+      return {
+        verdict: 'FAIL', score: 0, qa_type,
+        compilation_passed: false, contract_check_passed: null,
+        schema_check_passed: null, requirement_match_passed: false,
+        notes: [...scaffoldNotes, 'FAIL[scaffold]: Empty output'].join('\n'),
+        evidence_summary: JSON.stringify({ scaffold_mode: true, empty: true }),
+        evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+        feedback_for_task: 'QA FAIL (scaffold): Agent produced empty output.',
+        suggestion_for_task: 'Ensure the scaffold agent produces actual file content.',
+        escalate_to_incident: retry_count >= ESCALATION_RETRY_THRESHOLD,
+        fail_classification: 'EMPTY_OUTPUT', schema_corrections: {},
+        mode_used: evaluationMode, skipped_rules: skippedRules,
+      }
+    }
+
+    // Forbidden packages check
+    const forbiddenResult = checkForbiddenPackages(output)
+    if (forbiddenResult.hasForbidden) {
+      const detected = forbiddenResult.detected.slice(0, 3).join(', ')
+      return {
+        verdict: 'FAIL', score: 0, qa_type,
+        compilation_passed: false, contract_check_passed: null,
+        schema_check_passed: null, requirement_match_passed: false,
+        notes: [...scaffoldNotes, `FAIL[WRONG_STACK]: Forbidden packages in scaffold: ${detected}`].join('\n'),
+        evidence_summary: JSON.stringify({ scaffold_mode: true, forbidden_packages: forbiddenResult.detected }),
+        evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+        feedback_for_task: `QA FAIL (WRONG_STACK): Forbidden package(s) in scaffold: ${detected}.`,
+        suggestion_for_task: 'Remove forbidden imports. Scaffold must not use next-auth, prisma, or auth-helpers.',
+        escalate_to_incident: retry_count >= ESCALATION_RETRY_THRESHOLD,
+        fail_classification: 'WRONG_STACK', schema_corrections: {},
+        mode_used: evaluationMode, skipped_rules: skippedRules,
+      }
+    }
+
+    // Compilation: no error markers
+    const failureMarker = COMPILATION_FAILURE_MARKERS.find(m => output.includes(m))
+    if (failureMarker) {
+      return {
+        verdict: 'FAIL', score: 10, qa_type,
+        compilation_passed: false, contract_check_passed: null,
+        schema_check_passed: null, requirement_match_passed: null,
+        notes: [...scaffoldNotes, `FAIL compilation[scaffold]: Error marker "${failureMarker}"`].join('\n'),
+        evidence_summary: JSON.stringify({ scaffold_mode: true, compilation_failure_marker: failureMarker }),
+        evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+        feedback_for_task: `QA FAIL (scaffold): Compilation error: ${failureMarker}`,
+        suggestion_for_task: 'Fix the error marker in the scaffold output and retry.',
+        escalate_to_incident: retry_count >= ESCALATION_RETRY_THRESHOLD,
+        fail_classification: 'NO_CODE_STRUCTURE', schema_corrections: {},
+        mode_used: evaluationMode, skipped_rules: skippedRules,
+      }
+    }
+
+    // Minimum length (relaxed to 200 for scaffold)
+    const SCAFFOLD_MIN = 200
+    if (output.length < SCAFFOLD_MIN) {
+      return {
+        verdict: 'FAIL', score: 15, qa_type,
+        compilation_passed: false, contract_check_passed: null,
+        schema_check_passed: null, requirement_match_passed: false,
+        notes: [...scaffoldNotes, `FAIL[scaffold]: Output too short (${output.length} < ${SCAFFOLD_MIN})`].join('\n'),
+        evidence_summary: JSON.stringify({ scaffold_mode: true, output_length: output.length }),
+        evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+        feedback_for_task: `QA FAIL (scaffold): Output too short (${output.length} chars). Must produce real file content.`,
+        suggestion_for_task: 'Ensure scaffold output includes actual files (package.json, tsconfig, etc.).',
+        escalate_to_incident: retry_count >= ESCALATION_RETRY_THRESHOLD,
+        fail_classification: 'TOO_SHORT', schema_corrections: {},
+        mode_used: evaluationMode, skipped_rules: skippedRules,
+      }
+    }
+
+    // Requirement match (relaxed: 1 key term sufficient for scaffold)
+    const scaffoldTitleWords = extractKeyTerms(title)
+    const scaffoldOutputLower = output.toLowerCase()
+    const scaffoldMatched = scaffoldTitleWords.filter(w => scaffoldOutputLower.includes(w.toLowerCase()))
+    if (scaffoldTitleWords.length > 0 && scaffoldMatched.length === 0) {
+      return {
+        verdict: 'FAIL', score: 20, qa_type,
+        compilation_passed: true, contract_check_passed: null,
+        schema_check_passed: null, requirement_match_passed: false,
+        notes: [...scaffoldNotes, `FAIL requirement_match[scaffold]: 0/${scaffoldTitleWords.length} key terms found`].join('\n'),
+        evidence_summary: JSON.stringify({ scaffold_mode: true, key_terms: scaffoldTitleWords, matched: scaffoldMatched }),
+        evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+        feedback_for_task: 'QA FAIL (scaffold): Output does not address the scaffold task objective.',
+        suggestion_for_task: `Ensure output mentions: ${scaffoldTitleWords.slice(0, 3).join(', ')}.`,
+        escalate_to_incident: retry_count >= ESCALATION_RETRY_THRESHOLD,
+        fail_classification: 'REQUIREMENT_MISMATCH', schema_corrections: {},
+        mode_used: evaluationMode, skipped_rules: skippedRules,
+      }
+    }
+
+    // SCAFFOLD PASS
+    scaffoldNotes.push(`PASS[scaffold]: No forbidden packages, no compilation errors, length=${output.length}`)
+    scaffoldNotes.push(`VERDICT[scaffold]: PASS â schema+contract checks skipped by design (P7.6)`)
+    return {
+      verdict: 'PASS', score: 90, qa_type,
+      compilation_passed: true, contract_check_passed: null,
+      schema_check_passed: null, requirement_match_passed: true,
+      notes: scaffoldNotes.join('\n'),
+      evidence_summary: JSON.stringify({ scaffold_mode: true, output_length: output.length, skipped_rules: skippedRules }),
+      evaluator_model: EVALUATOR_MODEL, retry_recommended: false,
+      feedback_for_task: '',
+      suggestion_for_task: '',
+      escalate_to_incident: false,
+      fail_classification: null, schema_corrections: {},
+      mode_used: evaluationMode, skipped_rules: skippedRules,
+    }
   }
 
-  // ── Run all checks ───────────────────────────────────────────────────────
+  // ââ G10 FAIL-BY-DEFAULT: empty or missing output â immediate FAIL ââââââââââ
+
+  if (!output || output.length === 0) {
+    return {
+      ...buildResult({
+        qa_type,
+        verdict: 'FAIL',
+        score: 0,
+        compilation_passed: isCodeTask ? false : null,
+        contract_check_passed: null,
+        schema_check_passed: null,
+        requirement_match_passed: false,
+        noteLines: ['FAIL[G10]: Output is empty. No content produced by agent. FAIL-BY-DEFAULT applies.'],
+        evidence: { empty: true, length: 0, fail_by_default: true, evaluation_mode: evaluationMode },
+        feedback: 'QA FAIL (G10): Agent produced empty output. Task must be re-attempted.',
+        suggestion: 'Ensure the agent produces actual content. Verify the task description is actionable.',
+        retry_count,
+        fail_classification: 'EMPTY_OUTPUT',
+        schema_corrections: {},
+      }),
+      mode_used: evaluationMode,
+      skipped_rules: [],
+    }
+  }
+
+  // ââ Run all checks âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
   const noteLines: string[] = []
   const evidence: Record<string, unknown> = {
@@ -396,6 +672,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     qa_type,
     evaluator: EVALUATOR_MODEL,
     g10_fail_by_default: true,
+    evaluation_mode: evaluationMode,  // P7.6
   }
 
   let compilation_passed: boolean | null = null
@@ -403,7 +680,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
   let schema_check_passed: boolean | null = null
   let requirement_match_passed: boolean | null = null
 
-  // ── A. Compilation check (code tasks only) ────────────────────────────────
+  // ââ A. Compilation check (code tasks only) ââââââââââââââââââââââââââââââââ
 
   if (isCodeTask) {
     const failureMarker = COMPILATION_FAILURE_MARKERS.find(m => output.includes(m))
@@ -441,14 +718,15 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     evidence.compilation_passed = compilation_passed
   }
 
-  // ── A2. Forbidden packages check (code tasks — WS1 HARDENING) ───────────────
+  // ââ A2. Forbidden packages check (code tasks â WS1 HARDENING) âââââââââââââââ
   // WRONG_STACK = automatic FAIL regardless of other checks.
 
   if (isCodeTask) {
     const forbiddenResult = checkForbiddenPackages(output)
     if (forbiddenResult.hasForbidden) {
       const detected = forbiddenResult.detected.slice(0, 3).join(', ')
-      return buildResult({
+      return {
+        ...buildResult({
         qa_type,
         verdict: 'FAIL',
         score: 0,
@@ -465,12 +743,17 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
         feedback: `QA FAIL (WRONG_STACK): Agent used forbidden package(s): ${detected}. This codebase uses ONLY Supabase native auth.`,
         suggestion: 'Remove all next-auth/Prisma/auth-helpers imports. Use createAdminSupabaseClient() from @/lib/supabase/server for server-side auth.',
         retry_count,
-      })
+        fail_classification: 'WRONG_STACK',
+        schema_corrections: {},
+        }),
+        mode_used: evaluationMode,
+        skipped_rules: [],
+      }
     }
-    evidence.forbidden_packages_check = 'PASS — no forbidden packages detected'
+    evidence.forbidden_packages_check = 'PASS â no forbidden packages detected'
   }
 
-  // ── B. Contract/Import check (code tasks only) ────────────────────────────
+  // ââ B. Contract/Import check (code tasks only) ââââââââââââââââââââââââââââ
 
   if (isCodeTask) {
     const desc = (description || '').toLowerCase()
@@ -478,7 +761,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     const hasComponentContract = desc.includes('component') || desc.includes('tsx') || desc.includes('jsx')
     const hasExportContract = desc.includes('export') || hasRouteContract || hasComponentContract
 
-    // G10 FIX v5: missingImports check disabled — generates too many false positives.
+    // G10 FIX v5: missingImports check disabled â generates too many false positives.
     // Agent outputs often include prose descriptions with module references that don't
     // look like import statements. Other checks (compilation errors, missing exports)
     // catch truly incomplete code without this noisy heuristic.
@@ -497,7 +780,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
         if (!hasExport) reasons.push('missing export')
         if (!hasMethod) reasons.push('missing HTTP method/default export')
         if (missingImports) reasons.push('module references without import statements')
-        noteLines.push(`FAIL contract[G10]: Route contract violation — ${reasons.join(', ')}`)
+        noteLines.push(`FAIL contract[G10]: Route contract violation â ${reasons.join(', ')}`)
       } else {
         noteLines.push('PASS contract[G10]: Route contract satisfied (export + method/default + imports)')
       }
@@ -514,7 +797,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
         if (!hasExport) reasons.push('missing export')
         if (!hasFunction) reasons.push('missing function/const')
         if (missingImports) reasons.push('module references without import statements')
-        noteLines.push(`FAIL contract[G10]: Component contract violation — ${reasons.join(', ')}`)
+        noteLines.push(`FAIL contract[G10]: Component contract violation â ${reasons.join(', ')}`)
       } else {
         noteLines.push('PASS contract[G10]: Component contract satisfied')
       }
@@ -528,36 +811,45 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
         const reasons = []
         if (!hasExport) reasons.push('missing export')
         if (missingImports) reasons.push('module references without import statements')
-        noteLines.push(`FAIL contract[G10]: Export contract violation — ${reasons.join(', ')}`)
+        noteLines.push(`FAIL contract[G10]: Export contract violation â ${reasons.join(', ')}`)
       } else {
         noteLines.push('PASS contract[G10]: Export contract satisfied')
       }
     } else {
-      // No specific contract terms — still check for missing imports as warning
+      // No specific contract terms â still check for missing imports as warning
       if (missingImports) {
         contract_check_passed = false
-        noteLines.push('FAIL contract[G10]: Output references modules but has no import statements — likely incomplete code')
+        noteLines.push('FAIL contract[G10]: Output references modules but has no import statements â likely incomplete code')
         evidence.missing_imports = true
         evidence.contract_type = 'import_check'
       } else {
         contract_check_passed = null
         evidence.contract_type = 'none'
-        noteLines.push('SKIP contract[G10]: No specific contract terms detected — import check passed')
+        noteLines.push('SKIP contract[G10]: No specific contract terms detected â import check passed')
       }
     }
     evidence.contract_check_passed = contract_check_passed
   }
 
-  // ── C. Schema validation (RULE-27) ────────────────────────────────────────
+  // ââ C. Schema validation (RULE-27) ââââââââââââââââââââââââââââââââââââââââ
   // Always run for code tasks; also run for schema/migration type tasks
 
   const isSchemaRelevant = isCodeTask || task_type === 'schema' || task_type === 'migration'
+  let schemaCorrections: Record<string, string> = {}
+  let schemaDeterministicFix = false
   if (isSchemaRelevant) {
     const schemaResult = checkSchemaReferences(output, description, platform_tables)
     schema_check_passed = schemaResult.passed
+    schemaCorrections = schemaResult.corrections
+    schemaDeterministicFix = schemaResult.has_deterministic_fix
     evidence.schema_referenced_tables = schemaResult.referenced_tables
     evidence.schema_unknown_tables = schemaResult.unknown_tables
     evidence.schema_check_applied = schemaResult.referenced_tables.length > 0
+    // WS1: surface corrections in evidence for agent re-run context
+    if (Object.keys(schemaResult.corrections).length > 0) {
+      evidence.schema_corrections = schemaResult.corrections
+      evidence.schema_has_deterministic_fix = schemaResult.has_deterministic_fix
+    }
 
     if (schemaResult.passed === false) {
       noteLines.push(schemaResult.detail)
@@ -569,7 +861,7 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     evidence.schema_check_passed = schema_check_passed
   }
 
-  // ── D. Requirement match check ────────────────────────────────────────────
+  // ââ D. Requirement match check ââââââââââââââââââââââââââââââââââââââââââââ
 
   const minLength = isCodeTask ? MIN_CODE_LENGTH : MIN_NON_CODE_LENGTH
   const outputLower = output.toLowerCase()
@@ -603,10 +895,10 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
   }
   evidence.requirement_match_passed = requirement_match_passed
 
-  // ── G10 VERDICT: Fail-by-default multi-layer logic ───────────────────────
+  // ââ G10 VERDICT: Fail-by-default multi-layer logic âââââââââââââââââââââââ
   //
-  // Rule: ANY layer explicitly false → FAIL immediately.
-  // This eliminates all fake-green states — no partial pass, no auto-advance.
+  // Rule: ANY layer explicitly false â FAIL immediately.
+  // This eliminates all fake-green states â no partial pass, no auto-advance.
 
   let verdict: QAVerdict
 
@@ -619,9 +911,9 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
 
   if (anyFalse) {
     verdict = 'FAIL'
-    noteLines.push('VERDICT[G10]: FAIL — one or more checks explicitly failed (fail-by-default rule)')
+    noteLines.push('VERDICT[G10]: FAIL â one or more checks explicitly failed (fail-by-default rule)')
   } else {
-    // ── Compute score (only when no hard failures) ─────────────────────────
+    // ââ Compute score (only when no hard failures) âââââââââââââââââââââââââ
     // Score starts at 100. Deduct for any null (unproven) checks in code tasks.
     let score = 100
 
@@ -637,13 +929,13 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
 
     if (score >= PASS_THRESHOLD) {
       verdict = 'PASS'
-      noteLines.push(`VERDICT[G10]: PASS — all checks passed, score=${score}/100`)
+      noteLines.push(`VERDICT[G10]: PASS â all checks passed, score=${score}/100`)
     } else if (score >= RETRY_THRESHOLD) {
       verdict = 'RETRY_REQUIRED'
-      noteLines.push(`VERDICT[G10]: RETRY_REQUIRED — no hard failures but score=${score} below PASS threshold (${PASS_THRESHOLD})`)
+      noteLines.push(`VERDICT[G10]: RETRY_REQUIRED â no hard failures but score=${score} below PASS threshold (${PASS_THRESHOLD})`)
     } else {
       verdict = 'FAIL'
-      noteLines.push(`VERDICT[G10]: FAIL — score=${score} below RETRY threshold (${RETRY_THRESHOLD})`)
+      noteLines.push(`VERDICT[G10]: FAIL â score=${score} below RETRY threshold (${RETRY_THRESHOLD})`)
     }
 
     // Compute numeric score for the return value
@@ -651,9 +943,12 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     const feedback = verdict !== 'PASS'
       ? `QA ${verdict} (score ${finalScore}/100): ${noteLines.filter(l => l.startsWith('FAIL')).join('; ')}`
       : ''
-    const suggestion = buildSuggestion(verdict, isCodeTask, compilation_passed, requirement_match_passed, contract_check_passed, schema_check_passed, evidence)
+    const suggestion = buildSuggestion(verdict, isCodeTask, compilation_passed, requirement_match_passed, contract_check_passed, schema_check_passed, evidence, schemaCorrections)
 
     const escalate_to_incident = verdict !== 'PASS' && retry_count >= ESCALATION_RETRY_THRESHOLD
+
+    // WS1: determine fail_classification for the PASS/RETRY path (should be null for PASS)
+    const passFailClass: QAFailClassification = verdict !== 'PASS' ? 'REQUIREMENT_MISMATCH' : null
 
     return {
       verdict,
@@ -670,15 +965,20 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
       feedback_for_task: feedback,
       suggestion_for_task: suggestion,
       escalate_to_incident,
+      fail_classification: passFailClass,
+      schema_corrections: {},
+      mode_used: evaluationMode,  // P7.6
+      skipped_rules: [],          // P7.6 â feature mode: all rules applied
     }
   }
 
-  // ── Build feedback for FAIL case ──────────────────────────────────────────
+  // ââ Build feedback for FAIL case ââââââââââââââââââââââââââââââââââââââââââ
 
   const failedChecks = noteLines.filter(l => l.startsWith('FAIL'))
   const feedback = `QA ${verdict} (G10 fail-by-default): ${failedChecks.join('; ')}`
-  const suggestion = buildSuggestion(verdict, isCodeTask, compilation_passed, requirement_match_passed, contract_check_passed, schema_check_passed, evidence)
-  const escalate_to_incident = verdict !== 'PASS' && retry_count >= ESCALATION_RETRY_THRESHOLD
+  const suggestion = buildSuggestion(verdict, isCodeTask, compilation_passed, requirement_match_passed, contract_check_passed, schema_check_passed, evidence, schemaCorrections)
+  // verdict is always 'FAIL' here (only reached when anyFalse=true); comparison is intentional
+  const escalate_to_incident = retry_count >= ESCALATION_RETRY_THRESHOLD
 
   // Compute score for failed verdict
   let score = 100
@@ -687,6 +987,18 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
   if (isCodeTask && contract_check_passed === false) score -= 20
   if (isCodeTask && schema_check_passed === false) score -= 25
   score = Math.max(0, Math.min(100, score))
+
+  // WS1: derive fail_classification for FAIL path
+  let failClass: QAFailClassification = null
+  if (schema_check_passed === false) {
+    failClass = schemaDeterministicFix ? 'WRONG_SCHEMA_WITH_FIX' : 'WRONG_SCHEMA_NO_FIX'
+  } else if (compilation_passed === false) {
+    failClass = 'NO_CODE_STRUCTURE'
+  } else if (contract_check_passed === false) {
+    failClass = 'CONTRACT_VIOLATION'
+  } else if (requirement_match_passed === false) {
+    failClass = 'REQUIREMENT_MISMATCH'
+  }
 
   return {
     verdict: 'FAIL',
@@ -703,10 +1015,14 @@ export function evaluateQA(input: QAEvaluationInput): QAEvaluationResult {
     feedback_for_task: feedback,
     suggestion_for_task: suggestion,
     escalate_to_incident,
+    fail_classification: failClass,
+    schema_corrections: schemaCorrections,
+    mode_used: evaluationMode,  // P7.6
+    skipped_rules: [],          // P7.6 â feature mode: all rules applied
   }
 }
 
-// ── Helper: extract key terms from task title ─────────────────────────────────
+// ââ Helper: extract key terms from task title âââââââââââââââââââââââââââââââââ
 
 function extractKeyTerms(title: string): string[] {
   const stopWords = new Set([
@@ -722,7 +1038,7 @@ function extractKeyTerms(title: string): string[] {
     .slice(0, 8)
 }
 
-// ── Helper: build feedback suggestion (G10 schema-aware) ──────────────────────
+// ââ Helper: build feedback suggestion (G10 schema-aware) ââââââââââââââââââââââ
 
 function buildSuggestion(
   verdict: QAVerdict,
@@ -732,6 +1048,7 @@ function buildSuggestion(
   contractCheckPassed: boolean | null,
   schemaCheckPassed: boolean | null,
   evidence: Record<string, unknown>,
+  schemaCorrections?: Record<string, string>,
 ): string {
   if (verdict === 'PASS') return ''
 
@@ -775,7 +1092,24 @@ function buildSuggestion(
   if (isCodeTask && schemaCheckPassed === false) {
     const unknownTables = evidence.schema_unknown_tables as string[] | undefined
     if (unknownTables?.length) {
-      parts.push(`DB table reference(s) not in BuildOS schema (RULE-27): ${unknownTables.join(', ')}. Use only known tables.`)
+      // WS1: if we have deterministic corrections, provide them explicitly
+      const corrections = schemaCorrections && Object.keys(schemaCorrections).length > 0
+        ? schemaCorrections
+        : (evidence.schema_corrections as Record<string, string> | undefined)
+      if (corrections && Object.keys(corrections).length > 0) {
+        const correctionList = Object.entries(corrections)
+          .map(([wrong, correct]) => `'${wrong}' â '${correct}'`)
+          .join(', ')
+        parts.push(
+          `[WRONG_SCHEMA_WITH_FIX] Replace these DB table references to pass RULE-27: ${correctionList}. ` +
+          `These are the correct BuildOS table names for re-submission.`
+        )
+      } else {
+        parts.push(
+          `[WRONG_SCHEMA_NO_FIX] DB table reference(s) not in BuildOS schema (RULE-27): ${unknownTables.join(', ')}. ` +
+          `Use only known BuildOS tables listed in RULE-27 schema.`
+        )
+      }
     }
   }
 
@@ -784,7 +1118,7 @@ function buildSuggestion(
     : 'Review QA notes and retry with more complete, correct output.'
 }
 
-// ── Helper: assemble result object ───────────────────────────────────────────
+// ââ Helper: assemble result object âââââââââââââââââââââââââââââââââââââââââââ
 
 function buildResult(params: {
   qa_type: 'code' | 'non_code'
@@ -799,6 +1133,9 @@ function buildResult(params: {
   feedback: string
   suggestion: string
   retry_count: number
+  // WS1 Phase 6.2
+  fail_classification?: QAFailClassification
+  schema_corrections?: Record<string, string>
 }): QAEvaluationResult {
   const { verdict, retry_count } = params
   const escalate_to_incident = verdict !== 'PASS' && retry_count >= ESCALATION_RETRY_THRESHOLD
@@ -818,10 +1155,15 @@ function buildResult(params: {
     feedback_for_task: params.feedback,
     suggestion_for_task: params.suggestion,
     escalate_to_incident,
+    fail_classification: params.fail_classification ?? null,
+    schema_corrections: params.schema_corrections ?? {},
+    // P7.6: buildResult defaults to feature mode; callers override via spread
+    mode_used: 'feature' as QAEvaluationMode,
+    skipped_rules: [] as string[],
   }
 }
 
-// ── Persist QA result to DB ───────────────────────────────────────────────────
+// ââ Persist QA result to DB âââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 export async function persistQAResult(
   admin: SupabaseClient,
@@ -856,7 +1198,7 @@ export async function persistQAResult(
   return data?.id || null
 }
 
-// ── Write QA feedback back to task ────────────────────────────────────────────
+// ââ Write QA feedback back to task ââââââââââââââââââââââââââââââââââââââââââââ
 
 export async function persistQAFeedbackToTask(
   admin: SupabaseClient,
@@ -878,7 +1220,7 @@ export async function persistQAFeedbackToTask(
   }
 }
 
-// ── Create incident escalation for repeated QA failure ───────────────────────
+// ââ Create incident escalation for repeated QA failure âââââââââââââââââââââââ
 // G10 FIX: incident_type changed from 'qa' (invalid) to 'workflow' (valid enum)
 
 export async function escalateToIncident(
@@ -920,7 +1262,7 @@ export async function escalateToIncident(
   return data?.id || null
 }
 
-// ── Full QA pipeline: evaluate + persist + feedback + escalate ────────────────
+// ââ Full QA pipeline: evaluate + persist + feedback + escalate ââââââââââââââââ
 
 export async function runFullQAPipeline(
   admin: SupabaseClient,
@@ -937,7 +1279,42 @@ export async function runFullQAPipeline(
     await persistQAFeedbackToTask(admin, input.task_id, result)
   }
 
-  // 4. Escalate if needed
+  // 4. WS1 Phase 6.2: Auto-requeue when fix is deterministic (WRONG_SCHEMA_WITH_FIX)
+  // If QA failed solely because the agent used wrong table names AND we have known
+  // replacements for ALL of them, append the correction to failure_detail and reset
+  // the task to 'ready' so it is re-dispatched without any manual override.
+  if (
+    result.fail_classification === 'WRONG_SCHEMA_WITH_FIX' &&
+    result.verdict === 'FAIL' &&
+    Object.keys(result.schema_corrections).length > 0
+  ) {
+    const correctionText = Object.entries(result.schema_corrections)
+      .map(([wrong, correct]) => `${wrong} â ${correct}`)
+      .join(', ')
+    const autoFixNote = `[WS1 AUTO-REQUEUE] Schema fix available: ${correctionText}. ` +
+      `Task reset to ready. Agent must apply these table name corrections on retry.`
+
+    try {
+      await admin
+        .from('tasks')
+        .update({
+          status: 'ready',
+          failure_detail: autoFixNote,
+          dispatched_at: null,
+        })
+        .eq('id', input.task_id)
+        .in('status', ['awaiting_review', 'failed', 'blocked', 'in_progress'])
+
+      console.log(
+        `[qa-evaluator] WS1 AUTO-REQUEUE: task ${input.task_id} reset to ready. Corrections: ${correctionText}`
+      )
+    } catch (requeueErr) {
+      // Non-fatal: task stays in current state; manual review can handle it
+      console.warn(`[qa-evaluator] WS1 auto-requeue failed for task ${input.task_id}:`, requeueErr)
+    }
+  }
+
+  // 5. Escalate if needed
   const incident_id = result.escalate_to_incident
     ? await escalateToIncident(admin, input, result)
     : null
