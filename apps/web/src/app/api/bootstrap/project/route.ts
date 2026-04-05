@@ -23,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { provisionGitHubRepo } from '@/lib/github-provision'
-import { provisionVercelProject } from '@/lib/vercel-provision'
+import { provisionVercelProject, linkVercelGitHubRepo } from '@/lib/vercel-provision'
 // WS1/WS3/WS4 — Auth reliability + canonical state + env template
 import { upsertIntegrationState } from '@/lib/integration-state'
 import { injectVercelEnvTemplate } from '@/lib/vercel-env-template'
@@ -242,6 +242,34 @@ export async function POST(request: NextRequest) {
     }, { status: 500 })
   }
 
+  // ============================================================
+  // STEP 3b — Link GitHub repo to Vercel project (non-fatal)
+  // ============================================================
+  blog('step_3b_link', 'Linking GitHub repo to Vercel project for auto-deploy', {
+    vercelProjectId: vercelResult.project.id,
+    repoFullName:    githubResult.repoFullName,
+    repoId:          githubResult.repoId,
+  })
+  const linkResult = await linkVercelGitHubRepo(
+    vercelResult.project.id,
+    githubResult.repoFullName,
+    githubResult.repoId,
+    process.env.VERCEL_TEAM_ID,
+  )
+  if (linkResult.linked) {
+    blog('step_3b_link', 'SUCCESS — GitHub repo linked; Vercel will auto-deploy on push')
+    await writeLog(admin, project_id, 'vercel_link', 'completed', `GitHub repo linked: ${githubResult.repoFullName}`)
+  } else if (linkResult.skipped) {
+    blog('step_3b_link', 'SKIPPED', { reason: linkResult.skipReason })
+    await writeLog(admin, project_id, 'vercel_link', 'failed', `GitHub repo link skipped: ${linkResult.skipReason ?? 'unknown'}`)
+  } else {
+    blog('step_3b_link', 'WARN — link failed (non-fatal, auto-deploy unavailable)', {
+      error:  linkResult.error,
+      status: linkResult.status,
+    })
+    await writeLog(admin, project_id, 'vercel_link', 'failed', `GitHub repo link failed: ${linkResult.error ?? 'unknown'}`)
+  }
+
   // Store Vercel deployment target
   blog('step_3_vercel', 'Storing in deployment_targets')
   const vercelDeployUrl = `https://${vercelResult.project.name}.vercel.app`
@@ -402,8 +430,20 @@ export async function POST(request: NextRequest) {
         // WS2/WS5: write the PROJECT installation ID — the same one github-provision
         // used to create this repo. Downstream reads (scaffold, agent, preflight) use
         // this stored value. NEVER writes GITHUB_INSTALLATION_ID (platform path).
-        github_installation_id:
-          process.env.PROJECT_GITHUB_INSTALLATION_ID ?? process.env.GITHUB_APP_INSTALLATION_ID ?? '',
+        // P7.6: Canonical log — verify this is project installation (120987701), NOT platform (119933236)
+        github_installation_id: (() => {
+          const id = process.env.PROJECT_GITHUB_INSTALLATION_ID
+            ?? process.env.GITHUB_APP_INSTALLATION_ID
+            ?? ''
+          console.log(
+            `[github-config] path=project canonical_state installation_id=${id} ` +
+            `(source: ${process.env.PROJECT_GITHUB_INSTALLATION_ID ? 'PROJECT_GITHUB_INSTALLATION_ID' : 'GITHUB_APP_INSTALLATION_ID(legacy)'})`
+          )
+          if (!id) {
+            console.error('[github-config] CRITICAL: writing empty installation_id to canonical state — set PROJECT_GITHUB_INSTALLATION_ID')
+          }
+          return id
+        })(),
         github_repo_fullname: githubResult.repoFullName,
         vercel_project_id: vercelResult.project.id,
         env_template_version: '0.0.0', // updated after env injection below
@@ -445,7 +485,7 @@ export async function POST(request: NextRequest) {
         missing: envResult.missing,
       })
       await writeLog(admin, project_id, 'env_injection', 'failed',
-        \`Missing platform env vars: \${envResult.missing.join(', ')}\`)
+        `Missing platform env vars: ${envResult.missing.join(', ')}`)
     }
   } catch (envErr) {
     blog('step_4d_env_inject', 'WARN — env injection threw (non-fatal)', {

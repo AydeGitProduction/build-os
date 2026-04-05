@@ -80,15 +80,39 @@ export interface PlatformGitHubConfig {
  * NEVER reads GITHUB_INSTALLATION_ID (platform path).
  */
 export function resolveProjectGitHubConfig(): ProjectGitHubConfig {
+  const owner = process.env.PROJECT_GITHUB_OWNER
+    ?? process.env.GITHUB_ORG
+    ?? ''
+  const installationId = process.env.PROJECT_GITHUB_INSTALLATION_ID
+    ?? process.env.GITHUB_APP_INSTALLATION_ID
+    ?? ''
+
+  // P7.6: Fail-fast — NEVER silently use empty string for required project path vars.
+  // If PROJECT_GITHUB_INSTALLATION_ID is missing, commits will silently target the
+  // wrong repo or fail with a cryptic auth error. Throw early with a clear message.
+  if (!installationId) {
+    throw new Error(
+      '[github-config] MISSING: PROJECT_GITHUB_INSTALLATION_ID (or GITHUB_APP_INSTALLATION_ID). ' +
+      'Set this env var to the GitHub App installation ID for the project org (e.g. 120987701). ' +
+      'Project path cannot proceed without it.'
+    )
+  }
+  if (!owner) {
+    throw new Error(
+      '[github-config] MISSING: PROJECT_GITHUB_OWNER (or GITHUB_ORG). ' +
+      'Set this to the GitHub org where project repos are created (e.g. AydeGitBuildOS).'
+    )
+  }
+
+  // P7.6: Canonical logging — always visible in Vercel function logs
+  console.log(
+    `[github-config] path=project owner=${owner} installation_id=${installationId} ` +
+    `(source: ${process.env.PROJECT_GITHUB_INSTALLATION_ID ? 'PROJECT_GITHUB_INSTALLATION_ID' : 'GITHUB_APP_INSTALLATION_ID (legacy shim)'})`
+  )
+
   return {
-    owner: process.env.PROJECT_GITHUB_OWNER
-      ?? process.env.GITHUB_ORG
-      ?? '',                                   // AydeGitBuildOS
-
-    installationId: process.env.PROJECT_GITHUB_INSTALLATION_ID
-      ?? process.env.GITHUB_APP_INSTALLATION_ID
-      ?? '',                                   // 120987701
-
+    owner,
+    installationId,
     appId:      process.env.GITHUB_APP_ID ?? '',
     privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
     branch:     process.env.GITHUB_REPO_BRANCH ?? 'main',
@@ -102,19 +126,37 @@ export function resolveProjectGitHubConfig(): ProjectGitHubConfig {
  * NEVER reads PROJECT_* vars or GITHUB_ORG.
  */
 export function resolvePlatformGitHubConfig(): PlatformGitHubConfig {
+  const owner = process.env.PLATFORM_GITHUB_OWNER
+    ?? process.env.GITHUB_REPO_OWNER
+    ?? ''
+  const repo = process.env.PLATFORM_GITHUB_REPO
+    ?? process.env.GITHUB_REPO_NAME
+    ?? ''
+  const installationId = process.env.PLATFORM_GITHUB_INSTALLATION_ID
+    ?? process.env.GITHUB_INSTALLATION_ID
+    ?? ''
+
+  // P7.6: Fail-fast — platform path requires its own installation ID.
+  // PLATFORM_GITHUB_INSTALLATION_ID = 119933236 (AydeGitProduction).
+  // Must NEVER fall back to PROJECT_GITHUB_INSTALLATION_ID (project org).
+  if (!installationId) {
+    throw new Error(
+      '[github-config] MISSING: PLATFORM_GITHUB_INSTALLATION_ID (or GITHUB_INSTALLATION_ID). ' +
+      'Set this env var to 119933236 (AydeGitProduction installation). ' +
+      'Platform path cannot proceed without it.'
+    )
+  }
+
+  // P7.6: Canonical logging
+  console.log(
+    `[github-config] path=platform owner=${owner} repo=${repo} installation_id=${installationId} ` +
+    `(source: ${process.env.PLATFORM_GITHUB_INSTALLATION_ID ? 'PLATFORM_GITHUB_INSTALLATION_ID' : 'GITHUB_INSTALLATION_ID (legacy shim)'})`
+  )
+
   return {
-    owner: process.env.PLATFORM_GITHUB_OWNER
-      ?? process.env.GITHUB_REPO_OWNER
-      ?? '',                                   // AydeGitProduction
-
-    repo: process.env.PLATFORM_GITHUB_REPO
-      ?? process.env.GITHUB_REPO_NAME
-      ?? '',                                   // build-os
-
-    installationId: process.env.PLATFORM_GITHUB_INSTALLATION_ID
-      ?? process.env.GITHUB_INSTALLATION_ID
-      ?? '',                                   // 119933236
-
+    owner,
+    repo,
+    installationId,
     appId:      process.env.GITHUB_APP_ID ?? '',
     privateKey: process.env.GITHUB_APP_PRIVATE_KEY ?? '',
     pat:        process.env.PLATFORM_GITHUB_PAT ?? process.env.GITHUB_TOKEN ?? process.env.GITHUB_PAT,
