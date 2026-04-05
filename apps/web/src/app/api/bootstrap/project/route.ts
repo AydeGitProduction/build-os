@@ -23,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { provisionGitHubRepo } from '@/lib/github-provision'
-import { provisionVercelProject } from '@/lib/vercel-provision'
+import { provisionVercelProject, linkVercelGitHubRepo } from '@/lib/vercel-provision'
 // WS1/WS3/WS4 — Auth reliability + canonical state + env template
 import { upsertIntegrationState } from '@/lib/integration-state'
 import { injectVercelEnvTemplate } from '@/lib/vercel-env-template'
@@ -240,6 +240,33 @@ export async function POST(request: NextRequest) {
         repo_fullname: githubResult.repoFullName,
       },
     }, { status: 500 })
+  }
+
+  // ============================================================
+  // STEP 3b — Link GitHub repo to Vercel project (non-fatal)
+  // ============================================================
+  blog('step_3b_link', 'Linking GitHub repo to Vercel project for auto-deploy', {
+    vercelProjectId: vercelResult.project.id,
+    repoName:        githubResult.repoName,
+    repoId:          githubResult.repoId,
+  })
+  const linkResult = await linkVercelGitHubRepo(
+    vercelResult.project.id,
+    githubResult.repoName,
+    githubResult.repoId,
+    process.env.VERCEL_TEAM_ID,
+  )
+  if (linkResult.linked) {
+    blog('step_3b_link', 'SUCCESS — GitHub repo linked; Vercel will auto-deploy on push')
+    await writeLog(admin, project_id, 'vercel', 'linked', `GitHub repo linked: ${githubResult.repoFullName}`)
+  } else if (linkResult.skipped) {
+    blog('step_3b_link', 'SKIPPED', { reason: linkResult.skipReason })
+  } else {
+    blog('step_3b_link', 'WARN — link failed (non-fatal, auto-deploy unavailable)', {
+      error:  linkResult.error,
+      status: linkResult.status,
+    })
+    await writeLog(admin, project_id, 'vercel', 'warning', `GitHub repo link failed: ${linkResult.error ?? 'unknown'}`)
   }
 
   // Store Vercel deployment target
