@@ -835,20 +835,24 @@ export interface LinkVercelGitHubRepoResult {
  * Links a GitHub repository to an existing Vercel project so that pushes
  * automatically trigger Vercel deployments.
  *
- * Uses `gitCredentialId: "auto"` so Vercel resolves the correct GitHub App
- * installation credential for the repo's organization automatically.
+ * IMPORTANT: `repoFullName` must be the full "org/repo" format (e.g.
+ * "AydeGitBuildOS/buildos-my-project"). Vercel's link API requires the
+ * org prefix — a short name alone returns "install GitHub integration" error.
+ *
+ * Uses `VERCEL_GIT_CREDENTIAL_ID` env var if set, otherwise falls back to
+ * the well-known AydeGitBuildOS credential ID.
  *
  * Non-fatal by design: returns a result object rather than throwing, so
  * callers can log a warning and continue on failure.
  *
  * @param vercelProjectId  The Vercel project ID (e.g. "prj_xxx")
- * @param repoName         Short repo name only, no org prefix (e.g. "buildos-my-project")
+ * @param repoFullName     Full GitHub repo name with org (e.g. "AydeGitBuildOS/buildos-my-project")
  * @param repoId           Numeric GitHub repository ID
  * @param teamId           Optional Vercel team ID
  */
 export async function linkVercelGitHubRepo(
   vercelProjectId: string,
-  repoName: string,
+  repoFullName: string,
   repoId: number,
   teamId?: string
 ): Promise<LinkVercelGitHubRepoResult> {
@@ -856,13 +860,17 @@ export async function linkVercelGitHubRepo(
   if (!token) {
     return { linked: false, skipped: true, skipReason: "VERCEL_TOKEN not set" };
   }
-  if (!vercelProjectId || !repoName || !repoId) {
+  if (!vercelProjectId || !repoFullName || !repoId) {
     return {
       linked: false,
       skipped: true,
-      skipReason: `Missing required params: vercelProjectId=${vercelProjectId}, repoName=${repoName}, repoId=${repoId}`,
+      skipReason: `Missing required params: vercelProjectId=${vercelProjectId}, repoFullName=${repoFullName}, repoId=${repoId}`,
     };
   }
+
+  // Credential ID for the GitHub App installation on AydeGitBuildOS Vercel team
+  const gitCredentialId =
+    process.env.VERCEL_GIT_CREDENTIAL_ID ?? "cred_dc50f013b9c5e6166eae2f3d23931ae285973a93";
 
   const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : "";
   const url = `${VERCEL_API_BASE}/v9/projects/${encodeURIComponent(vercelProjectId)}/link${query}`;
@@ -876,15 +884,15 @@ export async function linkVercelGitHubRepo(
       },
       body: JSON.stringify({
         type: "github",
-        repo: repoName,
+        repo: repoFullName,
         repoId,
-        gitCredentialId: "auto",
+        gitCredentialId,
       }),
     });
 
     if (response.ok || response.status === 200 || response.status === 204) {
       console.log(
-        `[vercel-provision] Linked GitHub repo "${repoName}" (id=${repoId}) to Vercel project ${vercelProjectId}`
+        `[vercel-provision] Linked GitHub repo "${repoFullName}" (id=${repoId}) to Vercel project ${vercelProjectId}`
       );
       return { linked: true };
     }
