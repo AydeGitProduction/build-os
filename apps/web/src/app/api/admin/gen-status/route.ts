@@ -59,6 +59,17 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: false })
       .limit(5)
 
+    // WS4: Check qa_results — authoritative runtime truth for task QA verdict.
+    // guardian_sessions is EMPTY (never written by application code).
+    // guardian_verdict column does NOT exist on tasks table.
+    // The authoritative source of QA truth is qa_results (verdict + score + notes).
+    const { data: qaResults } = await admin
+      .from('qa_results')
+      .select('id, verdict, score, notes, retry_recommended, created_at')
+      .eq('task_id', task.id)
+      .order('created_at', { ascending: false })
+      .limit(3)
+
     // Check project_files
     const { data: projectFiles } = await admin
       .from('project_files')
@@ -89,6 +100,19 @@ export async function GET(request: NextRequest) {
         sha: l.commit_sha?.slice(0, 8),
         created_at: l.created_at,
       })),
+      // WS4: qa_results is the authoritative runtime truth for QA verdict.
+      // Note: guardian_sessions is always empty (never written by app code).
+      //       tasks.guardian_verdict column does not exist in the DB schema.
+      //       Use qa_results.verdict as the canonical QA result.
+      qa_results: (qaResults ?? []).map(q => ({
+        id: q.id?.slice(0, 8),
+        verdict: q.verdict,
+        score: q.score,
+        notes: q.notes?.slice(0, 200),
+        retry_recommended: q.retry_recommended,
+        created_at: q.created_at,
+      })),
+      runtime_truth_source: 'qa_results',
     })
   }
 

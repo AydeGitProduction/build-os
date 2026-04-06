@@ -233,6 +233,26 @@ async function handleTrigger(req: NextRequest): Promise<NextResponse> {
     .eq('id', project_id)
     .single()
 
+  // ── 9b. WS1 FIX — Fire orchestration tick after successful bootstrap ─────────
+  // Tasks were seeded before bootstrap trigger (by seedFromBlueprint). Now that
+  // bootstrap_status = 'ready_for_architect', the tick can safely dispatch them.
+  // Fire-and-forget: bootstrap response does not depend on tick completion.
+  if (bootstrapSuccess) {
+    try {
+      const tickUrl = baseUrl || process.env.NEXT_PUBLIC_APP_URL ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+      fetch(`${tickUrl}/api/orchestrate/tick?project_id=${project_id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Buildos-Secret': secret,
+        },
+        body: JSON.stringify({ triggered_by: 'post_bootstrap' }),
+      }).catch(() => {}) // fire-and-forget
+      console.log(`[TRIGGER] WS1: post-bootstrap orchestration tick fired for project ${project_id}`)
+    } catch { /* non-fatal */ }
+  }
+
   // ── 10. Return proof payload ───────────────────────────────────────────────
   const buildStatus = bootstrapSuccess ? 'complete' : 'failed'
 

@@ -456,6 +456,74 @@ export async function runOrchestrationTick(
 
   const tickAt = new Date().toISOString()
 
+  // ── WS1 BOOTSTRAP GUARD ────────────────────────────────────────────────
+  // Block dispatch if the project has not completed bootstrap.
+  // bootstrap_status must be 'ready_for_architect' (or 'ready') before any
+  // task can be dispatched. On new projects, bootstrap is triggered here
+  // (fire-and-forget) so the next tick will dispatch once it finishes.
+  //
+  // States that are NOT dispatch-safe:
+  //   not_started, init, github_pending, github_ready, vercel_pending,
+  //   vercel_ready, linking, awaiting_bootstrap, scaffolding, failed
+  // -----------------------------------------------------------------
+  const BOOTSTRAP_READY_STATES = new Set(['ready_for_architect', 'ready'])
+  try {
+    const { data: projectRow } = await admin
+      .from('projects')
+      .select('bootstrap_status, status')
+      .eq('id', projectId)
+      .single()
+
+    const bs = projectRow?.bootstrap_status ?? 'not_started'
+    if (!BOOTSTRAP_READY_STATES.has(bs)) {
+      console.log(
+        `[orchestration] WS1: bootstrap_status=${bs} — deferring task dispatch for project ${projectId}. ` +
+        `Firing bootstrap trigger.`
+      )
+      // Auto-trigger bootstrap for this project (idempotent)
+      try {
+        const autoUrl = baseUrl || process.env.NEXT_PUBLIC_APP_URL ||
+          (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+        const autoSecret = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || ''
+
+        const { data: bp } = await admin
+          .from('blueprints')
+          .select('id')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        if (bp?.id) {
+          fetch(`${autoUrl}/api/builds/trigger`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Buildos-Secret': autoSecret,
+            },
+            body: JSON.stringify({ project_id: projectId, blueprint_id: bp.id }),
+          }).catch(() => {}) // fire-and-forget
+        }
+      } catch { /* non-fatal */ }
+
+      return {
+        project_id:       projectId,
+        tick_at:          tickAt,
+        triggered_by:     triggeredBy,
+        dispatched_ids:   [],
+        unlocked_ids:     [],
+        guardrail_hit:    true,
+        guardrail_reason: `Bootstrap not ready (bootstrap_status=${bs}). Bootstrap trigger fired — dispatch deferred.`,
+        queue_depth:      0,
+        active_before:    0,
+        active_after:     0,
+      }
+    }
+  } catch (bsErr) {
+    console.warn('[orchestration] WS1: bootstrap guard check failed (non-fatal):', bsErr)
+    // Non-fatal: fall through and let dispatch proceed
+  }
+
   // ── 1. Unlock dependencies ─────────────────────────────────────────────
   const unlockedIds = await runDependencyUnlock(admin, projectId)
 
@@ -517,7 +585,7 @@ export async function runOrchestrationTick(
       // (those are terminal — a new dispatch after terminal is valid retry)
       const { data: activeRuns, error: activeRunErr } = await admin
         .from('task_runs')
-        .select('id, status')
+        .select('id, status, updated_at, created_at')
         .eq('task_id', task.id)
         .in('status', ['started', 'running', 'processing', 'dispatched'])
         .limit(1)
@@ -525,10 +593,38 @@ export async function runOrchestrationTick(
       if (activeRunErr) {
         console.warn(`[orchestration] active-run check failed for task ${task.id} (non-fatal):`, activeRunErr.message)
       } else if (activeRuns && activeRuns.length > 0) {
-        console.log(
-          `[orchestration] Task ${task.id} already has active run ${activeRuns[0].id} (status=${activeRuns[0].status}) — skipping dispatch (BUG-5 guard)`
-        )
-        continue
+        const activeRun = activeRuns[0]
+
+        // WS4 — HEARTBEAT STALE DETECTION: if a task_run has been active with no
+        // progress for > 5 minutes it is a ghost run (agent crashed, n8n webhook
+        // dropped, network failure). Mark it failed so the BUG-5 guard no longer
+        // blocks dispatch — the task will be re-dispatched on this tick.
+        const HEARTBEAT_STALE_MS = 5 * 60 * 1000 // 5 minutes
+        const lastActivity = (activeRun as { updated_at?: string; created_at?: string }).updated_at
+          || (activeRun as { updated_at?: string; created_at?: string }).created_at
+        const staleSince = lastActivity ? Date.now() - new Date(lastActivity).getTime() : Infinity
+
+        if (staleSince > HEARTBEAT_STALE_MS) {
+          console.log(
+            `[orchestration] WS4: Ghost run detected — task ${task.id} run ${activeRun.id} ` +
+            `(status=${activeRun.status}) no heartbeat for ${Math.round(staleSince / 60000)}m. ` +
+            `Marking failed to unblock dispatch.`
+          )
+          await admin
+            .from('task_runs')
+            .update({
+              status: 'failed',
+              completed_at: new Date().toISOString(),
+              error_message: `WS4: Ghost run — no heartbeat for ${Math.round(staleSince / 60000)} minutes. Auto-failed by dispatch integrity guard.`,
+            })
+            .eq('id', activeRun.id)
+          // Fall through: allow dispatch of this task this tick
+        } else {
+          console.log(
+            `[orchestration] Task ${task.id} already has active run ${activeRun.id} (status=${activeRun.status}) — skipping dispatch (BUG-5 guard)`
+          )
+          continue
+        }
       }
 
       const idempotencyKey = `orch-tick-${projectId}-${task.id}-${Date.now()}`

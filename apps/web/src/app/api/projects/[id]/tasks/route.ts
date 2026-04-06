@@ -289,20 +289,57 @@ async function seedFromBlueprint(supabase: any, projectId: string) {
     .update({ status: 'in_progress' })
     .eq('id', projectId)
 
-  // P6: Event-driven execution — fire an immediate orchestration tick so the
-  // first batch of ready tasks is dispatched right away, without waiting for cron.
+  // WS1/WS2 FIX — Bootstrap trigger after seed
+  // -----------------------------------------------------------------
+  // Fire /api/builds/trigger (fire-and-forget) to:
+  //   1. Create GitHub repo + Vercel project (idempotent)
+  //   2. Write canonical project_integrations (github_repo_url)
+  //   3. Write canonical deployment_targets (github_repo_fullname)
+  //   4. Commit base scaffold to the project repo
+  //   5. Set bootstrap_status = 'ready_for_architect'
+  //
+  // Without this step, project_integrations is empty → agent/generate
+  // hits the B0.3a routing safety gate → generation_status = 'compile_failed'
+  // → zero commits → tasks stuck in pending_deploy forever.
+  //
+  // The orchestration tick is NOT fired here — orchestration.ts
+  // checks bootstrap_status before dispatching tasks, so the cron/auto
+  // tick will dispatch once bootstrap completes.
+  // -----------------------------------------------------------------
   try {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
     const secret = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET || ''
-    fetch(`${appUrl}/api/orchestrate/tick?project_id=${projectId}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Buildos-Secret': secret,
-      },
-      body: JSON.stringify({ triggered_by: 'seed_complete' }),
-    }).catch(() => {}) // fire-and-forget
-  } catch { /* non-fatal */ }
+
+    // Fetch the blueprint id to pass to builds/trigger
+    const { data: blueprint } = await supabase
+      .from('blueprints')
+      .select('id')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    if (blueprint?.id) {
+      fetch(`${appUrl}/api/builds/trigger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Buildos-Secret': secret,
+        },
+        body: JSON.stringify({
+          project_id: projectId,
+          blueprint_id: blueprint.id,
+        }),
+      }).catch((err) => {
+        console.warn('[tasks/seed] bootstrap trigger failed (non-fatal):', err)
+      }) // fire-and-forget
+      console.log(`[tasks/seed] WS1: bootstrap trigger fired for project ${projectId} blueprint ${blueprint.id}`)
+    } else {
+      console.warn(`[tasks/seed] WS1: no blueprint found for project ${projectId} — bootstrap not triggered`)
+    }
+  } catch (bootstrapErr) {
+    console.warn('[tasks/seed] WS1: bootstrap trigger setup failed (non-fatal):', bootstrapErr)
+  }
 
   return NextResponse.json({
     data: {

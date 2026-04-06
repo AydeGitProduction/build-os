@@ -222,8 +222,40 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── 4. Create task_run ────────────────────────────────────────────────────
+    // ── 4. Acquire exclusive lock (BEFORE task_run creation) ─────────────────
+    // WS3 FIX: Lock must be acquired BEFORE creating the task_run row.
+    // Previous order (create task_run → acquire lock) had a race window:
+    //   - Two concurrent dispatch calls both created task_runs
+    //   - One got "Lock not acquired" → rolled back its run
+    //   - DB ended up with a ghost failed run for every duplicate dispatch
+    //
+    // By acquiring the lock first:
+    //   - Only one concurrent dispatch can acquire the lock
+    //   - The loser returns 423 immediately, without creating any task_run
+    //   - No ghost runs, no duplicate dispatch records
     const taskRunId = randomUUID()
+
+    // Pre-clean expired locks to prevent unique index violations on INSERT.
+    try {
+      await admin
+        .from('resource_locks')
+        .delete()
+        .eq('resource_id', task.id)
+        .lte('expires_at', new Date().toISOString())
+    } catch { /* non-fatal: best-effort cleanup */ }
+
+    const lock = await acquireLock(admin, 'task', task.id, taskRunId)
+    if (!lock.acquired) {
+      // Lock failed — do NOT create a task_run. Return 423 immediately.
+      await completeIdempotency(admin, idempotencyKey, operation, { error: `Lock unavailable: ${lock.reason}` }, false)
+      return NextResponse.json(
+        { error: `Task is currently locked by another run: ${lock.reason}` },
+        { status: 423 } // 423 Locked
+      )
+    }
+
+    // ── 5. Create task_run (AFTER lock is acquired) ───────────────────────────
+    // Only one concurrent dispatch can reach here — lock guarantees atomicity.
     const { data: taskRun, error: runError } = await admin
       .from('task_runs')
       .insert({
@@ -238,30 +270,10 @@ export async function POST(request: NextRequest) {
       .select()
       .single()
 
-    if (runError) throw new Error(`Failed to create task_run: ${runError.message}`)
-
-    // ── 5. Acquire exclusive lock ─────────────────────────────────────────────
-    // Pre-clean expired locks for this specific resource to prevent unique index violations.
-    // The buildos_acquire_lock function only checks non-expired locks but the unique index
-    // covers all rows — expired locks must be deleted before INSERT can succeed.
-    try {
-      await admin
-        .from('resource_locks')
-        .delete()
-        .eq('resource_id', task.id)
-        .lte('expires_at', new Date().toISOString())
-    } catch { /* non-fatal: best-effort cleanup */ }
-
-    const lock = await acquireLock(admin, 'task', task.id, taskRunId)
-    if (!lock.acquired) {
-      // Roll back task_run
-      await admin.from('task_runs').update({ status: 'failed', error_message: 'Lock not acquired' })
-        .eq('id', taskRunId)
-      await completeIdempotency(admin, idempotencyKey, operation, { error: `Lock unavailable: ${lock.reason}` }, false)
-      return NextResponse.json(
-        { error: `Task is currently locked by another run: ${lock.reason}` },
-        { status: 423 } // 423 Locked
-      )
+    if (runError) {
+      // Roll back lock if task_run creation fails
+      await admin.from('resource_locks').delete().eq('locked_by_task_run', taskRunId)
+      throw new Error(`Failed to create task_run: ${runError.message}`)
     }
 
     // ── 6. Update task status → dispatched ───────────────────────────────────
