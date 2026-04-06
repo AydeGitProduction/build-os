@@ -1,10 +1,7 @@
 /**
- * heavy-queue.ts
+ * heavy-queue.ts (v2 — WS3-A, WS4-A, WS5-C additions)
  * DB-backed job queue for heavy async task dispatch.
- * Uses table: heavy_dispatch_queue (created by MIGRATE-P7-9b.sql)
- *
- * All operations use the Supabase service_role client for server-side use.
- * All writes are idempotent via idempotency_key.
+ * Table: heavy_dispatch_queue (created by MIGRATE-P7-9b.sql)
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -29,6 +26,7 @@ export interface HeavyJob {
   completed_at: string | null
   failed_at: string | null
   last_error: string | null
+  last_heartbeat: string | null
   idempotency_key: string
   created_at: string
 }
@@ -48,63 +46,51 @@ export interface ClaimResult {
 }
 
 // ---------------------------------------------------------------------------
-// Enqueue
+// Enqueue (WS3-A: Idempotent with ON CONFLICT DO NOTHING)
 // ---------------------------------------------------------------------------
 
 /**
  * Enqueue a job into heavy_dispatch_queue.
- * Idempotent: subsequent calls with the same idempotency_key are no-ops.
- *
- * @returns the job record (either newly created or the existing one)
+ * WS3-A: ON CONFLICT (idempotency_key) DO NOTHING — returns existing row on duplicate.
  */
 export async function enqueueHeavyJob(
   supabase: SupabaseClient,
   options: EnqueueOptions
-): Promise<HeavyJob> {
-  const {
-    task_id,
-    task_run_id,
-    payload,
-    idempotency_key,
-    max_attempts = 3,
-    scheduled_at,
-  } = options
+): Promise<{ job: HeavyJob; was_duplicate: boolean }> {
+  const { task_id, task_run_id, payload, idempotency_key, max_attempts = 3, scheduled_at } = options
 
-  const { data, error } = await supabase
+  // Attempt INSERT — idempotent via ON CONFLICT DO NOTHING
+  const { data: inserted, error: insertError } = await supabase
     .from('heavy_dispatch_queue')
-    .upsert(
-      {
-        task_id,
-        task_run_id,
-        payload,
-        idempotency_key,
-        max_attempts,
-        status: 'queued',
-        ...(scheduled_at ? { scheduled_at: scheduled_at.toISOString() } : {}),
-      },
-      {
-        onConflict: 'idempotency_key',
-        ignoreDuplicates: true,
-      }
-    )
+    .insert({
+      task_id,
+      task_run_id,
+      payload,
+      idempotency_key,
+      max_attempts,
+      status: 'queued',
+      ...(scheduled_at ? { scheduled_at: scheduled_at.toISOString() } : {}),
+    })
     .select()
-    .single()
 
-  if (error) {
-    // If ignoreDuplicates swallowed the row, fetch the existing one
-    if (error.code === 'PGRST116') {
-      const { data: existing, error: fetchError } = await supabase
-        .from('heavy_dispatch_queue')
-        .select('*')
-        .eq('idempotency_key', idempotency_key)
-        .single()
-      if (fetchError) throw fetchError
-      return existing as HeavyJob
-    }
-    throw error
+  // If insert returned a row, it's a new job
+  if (!insertError && inserted && inserted.length > 0) {
+    return { job: inserted[0] as HeavyJob, was_duplicate: false }
   }
 
-  return data as HeavyJob
+  // Duplicate key (conflict) — fetch the existing job
+  if (insertError?.code === '23505' || (inserted && inserted.length === 0)) {
+    const { data: existing, error: fetchError } = await supabase
+      .from('heavy_dispatch_queue')
+      .select('*')
+      .eq('idempotency_key', idempotency_key)
+      .single()
+    if (fetchError) throw fetchError
+    return { job: existing as HeavyJob, was_duplicate: true }
+  }
+
+  if (insertError) throw insertError
+  throw new Error('enqueueHeavyJob: unexpected empty insert result')
 }
 
 // ---------------------------------------------------------------------------
@@ -113,16 +99,12 @@ export async function enqueueHeavyJob(
 
 /**
  * Claim the next available queued job.
- * Uses optimistic locking: UPDATE ... WHERE status = 'queued' AND scheduled_at <= now()
- * Returns null if no jobs are available.
- *
- * @param workerId - unique identifier for this worker instance
+ * Atomic optimistic lock: UPDATE WHERE status='queued' AND scheduled_at<=now()
  */
 export async function claimNextJob(
   supabase: SupabaseClient,
   workerId: string
 ): Promise<ClaimResult> {
-  // Fetch next available job
   const { data: candidates, error: fetchError } = await supabase
     .from('heavy_dispatch_queue')
     .select('id, attempt_count, max_attempts')
@@ -136,7 +118,6 @@ export async function claimNextJob(
 
   const candidate = candidates[0]
 
-  // Atomic claim
   const { data, error } = await supabase
     .from('heavy_dispatch_queue')
     .update({
@@ -148,28 +129,21 @@ export async function claimNextJob(
     .eq('id', candidate.id)
     .eq('status', 'queued') // guard: only claim if still queued
     .select()
-    .single()
 
   if (error) {
-    // Another worker claimed it first — return not claimed
     if (error.code === 'PGRST116') return { job: null, claimed: false }
     throw error
   }
 
-  return { job: data as HeavyJob, claimed: true }
+  if (!data || data.length === 0) return { job: null, claimed: false }
+  return { job: data[0] as HeavyJob, claimed: true }
 }
 
 // ---------------------------------------------------------------------------
-// Acknowledge (worker completes)
+// Acknowledge
 // ---------------------------------------------------------------------------
 
-/**
- * Mark a job as completed after successful processing.
- */
-export async function acknowledgeJob(
-  supabase: SupabaseClient,
-  jobId: string
-): Promise<void> {
+export async function acknowledgeJob(supabase: SupabaseClient, jobId: string): Promise<void> {
   const { error } = await supabase
     .from('heavy_dispatch_queue')
     .update({
@@ -180,68 +154,79 @@ export async function acknowledgeJob(
     })
     .eq('id', jobId)
     .eq('status', 'processing')
-
   if (error) throw error
 }
 
 // ---------------------------------------------------------------------------
-// Fail (worker reports error)
+// Fail with exponential backoff (WS4-A)
 // ---------------------------------------------------------------------------
 
 /**
- * Mark a job as failed. If attempt_count >= max_attempts, escalates to 'dead'.
+ * Mark a job as failed with exponential backoff retry scheduling.
+ * WS4-A: delay = 2^attempt_count * 30s (30s, 60s, 120s...)
+ * Escalates to 'dead' when attempt_count >= max_attempts.
  */
 export async function failJob(
   supabase: SupabaseClient,
   jobId: string,
   errorMessage: string,
-  retryDelay?: number // seconds before next attempt
+  retryDelaySecs?: number
 ): Promise<void> {
-  // Fetch current attempt info
   const { data: job, error: fetchError } = await supabase
     .from('heavy_dispatch_queue')
     .select('attempt_count, max_attempts')
     .eq('id', jobId)
     .single()
-
   if (fetchError) throw fetchError
 
-  const isDead = (job.attempt_count ?? 0) >= (job.max_attempts ?? 3)
-  const nextStatus: JobStatus = isDead ? 'dead' : 'failed'
+  const attemptCount = job.attempt_count ?? 0
+  const maxAttempts = job.max_attempts ?? 3
+  const isDead = attemptCount >= maxAttempts
+
+  // WS4-A: exponential backoff — 2^attempt_count * 30s
+  const backoffSecs = retryDelaySecs ?? Math.pow(2, Math.max(0, attemptCount - 1)) * 30
 
   const updatePayload: Record<string, unknown> = {
-    status: nextStatus,
     last_error: errorMessage,
-    failed_at: new Date().toISOString(),
     locked_at: null,
     locked_by: null,
   }
 
-  // If retrying, reset to 'queued' with a future scheduled_at
-  if (!isDead && retryDelay) {
-    const retryAt = new Date(Date.now() + retryDelay * 1000)
+  if (isDead) {
+    updatePayload.status = 'dead'
+    updatePayload.failed_at = new Date().toISOString()
+  } else {
+    // Re-queue with backoff delay
     updatePayload.status = 'queued'
-    updatePayload.scheduled_at = retryAt.toISOString()
+    updatePayload.scheduled_at = new Date(Date.now() + backoffSecs * 1000).toISOString()
   }
 
-  const { error } = await supabase
-    .from('heavy_dispatch_queue')
-    .update(updatePayload)
-    .eq('id', jobId)
-
+  const { error } = await supabase.from('heavy_dispatch_queue').update(updatePayload).eq('id', jobId)
   if (error) throw error
 }
 
 // ---------------------------------------------------------------------------
-// Stale lock detection
+// Heartbeat emitter (WS5-C: stuck-run detection)
 // ---------------------------------------------------------------------------
 
 /**
- * Find and reset jobs that have been locked (processing) for longer than
- * the given threshold (default: 5 minutes). Resets them to 'queued' for retry,
- * or 'dead' if max_attempts exceeded.
- *
- * @returns number of stale jobs reset
+ * Update last_heartbeat for an active job. Called periodically by the worker.
+ */
+export async function emitHeartbeat(supabase: SupabaseClient, jobId: string, taskRunId: string): Promise<void> {
+  const now = new Date().toISOString()
+  await Promise.all([
+    supabase.from('heavy_dispatch_queue').update({ last_heartbeat: now }).eq('id', jobId),
+    supabase.from('task_runs').update({ last_heartbeat: now }).eq('id', taskRunId),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// Stale lock detection with heartbeat (WS5-C)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reset stale locks. WS5-C: also considers heartbeat — if last_heartbeat is
+ * older than thresholdMinutes, the worker is stuck regardless of locked_at age.
  */
 export async function resetStaleLocks(
   supabase: SupabaseClient,
@@ -253,12 +238,12 @@ export async function resetStaleLocks(
     .from('heavy_dispatch_queue')
     .select('id, attempt_count, max_attempts')
     .eq('status', 'processing')
-    .lt('locked_at', cutoff)
+    .or(`locked_at.lt.${cutoff},last_heartbeat.lt.${cutoff}`)
 
   if (fetchError) throw fetchError
   if (!stale || stale.length === 0) return 0
 
-  let resetCount = 0
+  let count = 0
   for (const job of stale) {
     const isDead = (job.attempt_count ?? 0) >= (job.max_attempts ?? 3)
     const { error } = await supabase
@@ -267,33 +252,22 @@ export async function resetStaleLocks(
         status: isDead ? 'dead' : 'queued',
         locked_at: null,
         locked_by: null,
-        last_error: `Stale lock reset after ${thresholdMinutes}m threshold`,
+        last_error: `Stuck run reset (heartbeat/lock age > ${thresholdMinutes}m)`,
       })
       .eq('id', job.id)
       .eq('status', 'processing')
-
-    if (!error) resetCount++
+    if (!error) count++
   }
-
-  return resetCount
+  return count
 }
 
 // ---------------------------------------------------------------------------
-// Queue depth
+// Queue depth monitoring
 // ---------------------------------------------------------------------------
 
-/**
- * Returns counts of jobs by status for monitoring.
- */
-export async function getQueueDepth(
-  supabase: SupabaseClient
-): Promise<Record<JobStatus | string, number>> {
-  const { data, error } = await supabase
-    .from('heavy_dispatch_queue')
-    .select('status')
-
+export async function getQueueDepth(supabase: SupabaseClient): Promise<Record<string, number>> {
+  const { data, error } = await supabase.from('heavy_dispatch_queue').select('status')
   if (error) throw error
-
   const counts: Record<string, number> = {}
   for (const row of data ?? []) {
     counts[row.status] = (counts[row.status] ?? 0) + 1
