@@ -321,6 +321,8 @@ export interface Task {
   order_index: number
   created_at: string
   updated_at: string
+  // Phase 7.9: execution lane split
+  execution_lane?: 'fast' | 'heavy' | null
 }
 
 export interface Document_ {

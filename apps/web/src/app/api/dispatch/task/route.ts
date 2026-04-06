@@ -36,6 +36,8 @@ import { randomUUID } from 'crypto'
 import { decide as routingDecide, MODEL_IDS } from '@/lib/routing'
 // G4: Stub gate + commit reliability
 import { createStubFile, extractCreatePaths, logCommitDelivery } from '@/lib/commit-reliability'
+// Phase 7.9: Execution lane classifier
+import { classifyTaskWithReason } from '@/lib/execution-classifier'
 
 export async function POST(request: NextRequest) {
   const admin = createAdminSupabaseClient()
@@ -95,7 +97,7 @@ export async function POST(request: NextRequest) {
     // ── 2. Fetch task (via admin client — internal dispatch bypasses RLS) ─────
     const { data: task, error: taskError } = await admin
       .from('tasks')
-      .select('id, title, description, status, agent_role, task_type, context_payload, project_id, feature_id')
+      .select('id, title, description, status, agent_role, task_type, context_payload, project_id, feature_id, execution_lane')
       .eq('id', task_id)
       .single()
 
@@ -254,6 +256,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // ── Phase 7.9: Classify execution lane ───────────────────────────────────
+    // WS1 + WS2: Determine fast vs heavy lane before creating task_run.
+    // Heavy tasks (test generation, schema migrations, RLS audits) bypass n8n
+    // and route directly to /api/worker/heavy (maxDuration=300s, inline Claude).
+    const laneResult = classifyTaskWithReason({
+      task_type: task.task_type,
+      title: task.title,
+      description: task.description,
+      execution_lane: (task as Record<string, unknown>).execution_lane as string | null,
+    })
+    const executionLane = laneResult.lane
+    const executorUsed  = executionLane === 'heavy' ? 'inline-heavy' : 'n8n'
+    console.log(`[dispatch/task] Lane classification: task=${task.id} lane=${executionLane} reason="${laneResult.reason}"`)
+
+    // Update task's execution_lane in DB if not already set
+    if (!(task as Record<string, unknown>).execution_lane) {
+      await admin
+        .from('tasks')
+        .update({ execution_lane: executionLane })
+        .eq('id', task.id)
+        .then(() => {}) // fire-and-forget, non-fatal
+    }
+
     // ── 5. Create task_run (AFTER lock is acquired) ───────────────────────────
     // Only one concurrent dispatch can reach here — lock guarantees atomicity.
     const { data: taskRun, error: runError } = await admin
@@ -266,6 +291,7 @@ export async function POST(request: NextRequest) {
         status: 'started',
         agent_role: task.agent_role,
         started_at: new Date().toISOString(),
+        executor_used: executorUsed,
       })
       .select()
       .single()
@@ -403,12 +429,22 @@ export async function POST(request: NextRequest) {
     const qaWebhookUrl          = process.env.N8N_QA_WEBHOOK_URL
     const dispatchWebhookUrl    = process.env.N8N_DISPATCH_WEBHOOK_URL
 
+    // ── Phase 7.9 WS2: Route heavy tasks to inline worker ────────────────────
+    // STRICT: heavy tasks NEVER go to n8n (which times out for large LLM jobs).
+    // Heavy tasks → /api/worker/heavy (maxDuration=300s, direct Claude call).
+    // Fast tasks  → N8N_DISPATCH_WEBHOOK_URL (existing path, unchanged).
     let targetWebhookUrl: string | null = null
-    if (dispatchWebhookUrl) {
+    if (executionLane === 'heavy') {
+      // Heavy lane: route to inline worker endpoint (no n8n intermediary)
+      const heavyWorkerUrl = process.env.HEAVY_WORKER_URL || `${appUrl}/api/worker/heavy`
+      targetWebhookUrl = heavyWorkerUrl
+      console.log(`[dispatch/task] HEAVY lane: routing to inline worker ${heavyWorkerUrl} (task=${task.id})`)
+    } else if (dispatchWebhookUrl) {
+      // Fast lane: standard n8n dispatch
       targetWebhookUrl = dispatchWebhookUrl
     }
 
-    let dispatchMethod: 'n8n' | 'inline' | 'mock' = 'mock'
+    let dispatchMethod: 'n8n' | 'inline' | 'inline-heavy' | 'mock' = 'mock'
     let webhookOk = true
 
     if (targetWebhookUrl) {
@@ -422,7 +458,14 @@ export async function POST(request: NextRequest) {
         payload,
         webhookSecret
       )
-      dispatchMethod = targetWebhookUrl.includes('/api/agent/execute') ? 'inline' : 'n8n'
+      // Phase 7.9: label the dispatch method correctly
+      if (targetWebhookUrl.includes('/api/worker/heavy')) {
+        dispatchMethod = 'inline-heavy'
+      } else if (targetWebhookUrl.includes('/api/agent/execute')) {
+        dispatchMethod = 'inline'
+      } else {
+        dispatchMethod = 'n8n'
+      }
       if (!ok) {
         console.error('[dispatch/task] webhook failed:', webhookErr)
         webhookOk = false
@@ -560,6 +603,10 @@ export async function POST(request: NextRequest) {
       dispatch_method:  dispatchMethod,
       lock_id:          lock.lockId,
       routed_to:        'routing_engine',
+      // Phase 7.9: execution lane
+      execution_lane:   executionLane,
+      executor_used:    executorUsed,
+      lane_reason:      laneResult.reason,
       // ERT-P6C routing fields
       routing_model:    routingDecision.model,
       routing_model_id: resolvedModelId,
