@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
     // ── 2. Fetch task (via admin client — internal dispatch bypasses RLS) ─────
     const { data: task, error: taskError } = await admin
       .from('tasks')
-      .select('id, title, description, status, agent_role, task_type, context_payload, project_id, feature_id, execution_lane')
+      .select('id, title, description, status, agent_role, task_type, context_payload, project_id, feature_id')
       .eq('id', task_id)
       .single()
 
@@ -264,20 +264,19 @@ export async function POST(request: NextRequest) {
       task_type: task.task_type,
       title: task.title,
       description: task.description,
-      execution_lane: (task as Record<string, unknown>).execution_lane as string | null,
+      // execution_lane column may not exist yet (migration pending) — classify from title/type
     })
     const executionLane = laneResult.lane
     const executorUsed  = executionLane === 'heavy' ? 'inline-heavy' : 'n8n'
     console.log(`[dispatch/task] Lane classification: task=${task.id} lane=${executionLane} reason="${laneResult.reason}"`)
 
-    // Update task's execution_lane in DB if not already set
-    if (!(task as Record<string, unknown>).execution_lane) {
+    // Update task's execution_lane in DB (non-fatal — column may not exist if migration pending)
+    try {
       await admin
         .from('tasks')
-        .update({ execution_lane: executionLane })
+        .update({ execution_lane: executionLane } as Record<string, unknown>)
         .eq('id', task.id)
-        .then(() => {}) // fire-and-forget, non-fatal
-    }
+    } catch { /* non-fatal: migration not yet applied */ }
 
     // ── 5. Create task_run (AFTER lock is acquired) ───────────────────────────
     // Only one concurrent dispatch can reach here — lock guarantees atomicity.
@@ -291,10 +290,17 @@ export async function POST(request: NextRequest) {
         status: 'started',
         agent_role: task.agent_role,
         started_at: new Date().toISOString(),
-        executor_used: executorUsed,
       })
       .select()
       .single()
+
+    // Phase 7.9 WS6: Tag executor_used (non-fatal — column may not exist if migration not yet applied)
+    try {
+      await admin
+        .from('task_runs')
+        .update({ executor_used: executorUsed } as Record<string, unknown>)
+        .eq('id', taskRunId)
+    } catch { /* non-fatal: migration may not be applied yet */ }
 
     if (runError) {
       // Roll back lock if task_run creation fails
