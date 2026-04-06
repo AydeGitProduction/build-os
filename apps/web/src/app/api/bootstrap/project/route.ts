@@ -1,18 +1,18 @@
 /**
  * POST /api/bootstrap/project
  *
- * B0.1 â Bootstrap Bring-to-Life
- * Direct infra execution â NO task pipeline dependency.
+ * B0.1 — Bootstrap Bring-to-Life
+ * Direct infra execution — NO task pipeline dependency.
  *
  * Flow:
  *   1. set bootstrap_status = 'init'
- *   2. create GitHub repo â store in project_integrations
- *   3. create Vercel project â store in deployment_targets
- *   4. link GitHub â Vercel in deployment_targets.config
+ *   2. create GitHub repo → store in project_integrations
+ *   3. create Vercel project → store in deployment_targets
+ *   4. link GitHub → Vercel in deployment_targets.config
  *   5. set bootstrap_status = 'ready_for_architect'
  *
  * Every step logs [BOOTSTRAP] prefix for live monitoring.
- * Any failure â bootstrap_status = 'failed', hard error returned.
+ * Any failure → bootstrap_status = 'failed', hard error returned.
  * NO silent failures.
  *
  * Idempotent: already-bootstrapped projects return 200 immediately.
@@ -28,7 +28,7 @@ import { provisionVercelProject, linkVercelGitHubRepo } from '@/lib/vercel-provi
 import { upsertIntegrationState } from '@/lib/integration-state'
 import { injectVercelEnvTemplate } from '@/lib/vercel-env-template'
 
-// âââ Admin Supabase client âââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Admin Supabase client ────────────────────────────────────────────────────
 function getAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -38,13 +38,13 @@ function getAdmin() {
   })
 }
 
-// âââ Structured bootstrap logger ââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Structured bootstrap logger ──────────────────────────────────────────────
 function blog(step: string, msg: string, data?: unknown) {
   const payload = data !== undefined ? ` | ${JSON.stringify(data)}` : ''
-  console.log(`[BOOTSTRAP] ${step} â ${msg}${payload}`)
+  console.log(`[BOOTSTRAP] ${step} → ${msg}${payload}`)
 }
 
-// âââ Write to bootstrap_log table (non-fatal) âââââââââââââââââââââââââââââââ
+// ─── Write to bootstrap_log table (non-fatal) ─────────────────────────────────
 async function writeLog(
   admin: ReturnType<typeof getAdmin>,
   projectId: string,
@@ -59,7 +59,7 @@ async function writeLog(
   }
 }
 
-// âââ Update bootstrap_status on projects row ââââââââââââââââââââââââââââââââ
+// ─── Update bootstrap_status on projects row ──────────────────────────────────
 async function setStatus(
   admin: ReturnType<typeof getAdmin>,
   projectId: string,
@@ -71,23 +71,23 @@ async function setStatus(
     .update({ bootstrap_status: status })
     .eq('id', projectId)
   if (error) {
-    // Non-fatal status write â log but don't abort (the real step error matters more)
+    // Non-fatal status write → log but don't abort (the real step error matters more)
     console.error(`[BOOTSTRAP] status update failed:`, error.message)
   }
 }
 
-// âââ Route ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// ─── Route ────────────────────────────────────────────────────────────────────
 export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
-  // ââ Auth ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Auth ────────────────────────────────────────────────────────────────────
   const secret = request.headers.get('X-Buildos-Secret') ?? request.headers.get('x-buildos-secret')
   const validSecret = process.env.BUILDOS_INTERNAL_SECRET || process.env.BUILDOS_SECRET
   if (!secret || secret !== validSecret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // ââ Parse body ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Parse body ──────────────────────────────────────────────────────────────
   let project_id: string
   try {
     const body = await request.json()
@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
   const admin = getAdmin()
   blog('init', `Bootstrap requested for project_id=${project_id}`)
 
-  // ââ Fetch project âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Fetch project ───────────────────────────────────────────────────────────
   const { data: project, error: projErr } = await admin
     .from('projects')
     .select('id, name, status, bootstrap_status')
@@ -111,7 +111,7 @@ export async function POST(request: NextRequest) {
     .single()
 
   if (projErr || !project) {
-    blog('init', 'FAIL â project not found', { project_id })
+    blog('init', 'FAIL → project not found', { project_id })
     return NextResponse.json({ error: 'Project not found', project_id }, { status: 404 })
   }
 
@@ -119,9 +119,9 @@ export async function POST(request: NextRequest) {
     current_bootstrap_status: project.bootstrap_status,
   })
 
-  // ââ Idempotency: already ready ââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Idempotency: already ready ──────────────────────────────────────────────
   if (project.bootstrap_status === 'ready_for_architect' || project.bootstrap_status === 'ready') {
-    blog('init', 'Already bootstrapped â returning cached result')
+    blog('init', 'Already bootstrapped → returning cached result')
 
     const { data: targets } = await admin
       .from('deployment_targets')
@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  // ââ Build project slug for repo naming ââââââââââââââââââââââââââââââââââââ
+  // ── Build project slug for repo naming ──────────────────────────────────────
   const projectSlug = project.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -147,14 +147,14 @@ export async function POST(request: NextRequest) {
     .slice(0, 40)
 
   // ============================================================
-  // STEP 1 â Set init
+  // STEP 1 → Set init
   // ============================================================
   blog('step_1', 'Setting bootstrap_status = init')
   await setStatus(admin, project_id, 'init')
   await writeLog(admin, project_id, 'bootstrap', 'started', `Starting bootstrap for "${project.name}"`)
 
   // ============================================================
-  // STEP 2 â GitHub repo
+  // STEP 2 → GitHub repo
   // ============================================================
   blog('step_2_github', 'Creating GitHub repo', { org: process.env.GITHUB_ORG ?? process.env.GITHUB_REPO_OWNER, slug: projectSlug })
   await setStatus(admin, project_id, 'github_pending')
@@ -196,14 +196,14 @@ export async function POST(request: NextRequest) {
   }
 
   // GitHub data is captured in bootstrap_log and will be stored in deployment_targets.target_config
-  // (project_integrations requires provider_id UUID FK â resolved in Step 3 alongside Vercel target)
-  blog('step_2_github', 'GitHub data captured in bootstrap_log â will persist to deployment_targets in Step 3')
+  // (project_integrations requires provider_id UUID FK → resolved in Step 3 alongside Vercel target)
+  blog('step_2_github', 'GitHub data captured in bootstrap_log → will persist to deployment_targets in Step 3')
 
   await setStatus(admin, project_id, 'github_ready')
   await writeLog(admin, project_id, 'github', 'completed', githubResult.repoUrl)
 
   // ============================================================
-  // STEP 3 â Vercel project
+  // STEP 3 → Vercel project
   // ============================================================
   blog('step_3_vercel', 'Creating Vercel project', { projectName: `buildos-${projectSlug}` })
   await setStatus(admin, project_id, 'vercel_pending')
@@ -212,7 +212,7 @@ export async function POST(request: NextRequest) {
   let vercelResult: { project: { id: string; name: string; accountId?: string }; created: boolean }
 
   try {
-    // Note: gitRepository NOT passed here â Vercel GitHub App may not be installed on
+    // Note: gitRepository NOT passed here → Vercel GitHub App may not be installed on
     // every org. GitHub repo is linked separately after App installation.
     vercelResult = await provisionVercelProject({
       projectName: `buildos-${projectSlug}`,
@@ -274,7 +274,7 @@ export async function POST(request: NextRequest) {
   blog('step_3_vercel', 'Storing in deployment_targets')
   const vercelDeployUrl = `https://${vercelResult.project.name}.vercel.app`
 
-  // deployment_targets requires environment_id FK â project_environments.id
+  // deployment_targets requires environment_id FK → project_environments.id
   // Look up (or create) the production environment for this project
   let envId: string
   const { data: existingEnv } = await admin
@@ -288,7 +288,7 @@ export async function POST(request: NextRequest) {
     envId = existingEnv.id
     blog('step_3_vercel', 'Found existing production environment', { envId })
   } else {
-    blog('step_3_vercel', 'No production environment found â creating one')
+    blog('step_3_vercel', 'No production environment found → creating one')
     const { data: newEnv, error: envErr } = await admin
       .from('project_environments')
       .insert({
@@ -302,7 +302,7 @@ export async function POST(request: NextRequest) {
 
     if (envErr || !newEnv) {
       const msg = envErr?.message ?? 'Failed to create project_environments row'
-      blog('step_3_vercel', 'FAIL â cannot create production environment', { error: msg })
+      blog('step_3_vercel', 'FAIL → cannot create production environment', { error: msg })
       await setStatus(admin, project_id, 'failed')
       await writeLog(admin, project_id, 'vercel', 'failed', `env creation failed: ${msg}`)
       return NextResponse.json({
@@ -339,7 +339,7 @@ export async function POST(request: NextRequest) {
     }, { onConflict: 'project_id,environment_id' })
 
   if (vercelTargErr) {
-    blog('step_3_vercel', 'WARN â deployment_targets upsert failed (non-fatal)', { error: vercelTargErr.message })
+    blog('step_3_vercel', 'WARN → deployment_targets upsert failed (non-fatal)', { error: vercelTargErr.message })
   } else {
     blog('step_3_vercel', 'Stored in deployment_targets OK')
   }
@@ -348,7 +348,7 @@ export async function POST(request: NextRequest) {
   await writeLog(admin, project_id, 'vercel', 'completed', vercelDeployUrl)
 
   // ============================================================
-  // STEP 4 â Link: update deployment_url on production environment
+  // STEP 4 → Link: update deployment_url on production environment
   // ============================================================
   blog('step_4_link', 'Linking: updating production environment deployment_url')
   await setStatus(admin, project_id, 'linking')
@@ -359,9 +359,9 @@ export async function POST(request: NextRequest) {
     .eq('id', envId)
 
   if (linkErr) {
-    blog('step_4_link', 'WARN â environment deployment_url update failed (non-fatal)', { error: linkErr.message })
+    blog('step_4_link', 'WARN → environment deployment_url update failed (non-fatal)', { error: linkErr.message })
   } else {
-    blog('step_4_link', 'Linked OK â production environment deployment_url set to', { vercelDeployUrl })
+    blog('step_4_link', 'Linked OK → production environment deployment_url set to', { vercelDeployUrl })
   }
 
   await writeLog(admin, project_id, 'linking', 'completed', `github=${githubResult.repoUrl} vercel=${vercelDeployUrl}`)
@@ -494,11 +494,11 @@ export async function POST(request: NextRequest) {
   }
 
   // ============================================================
-  // STEP 5 â Ready
+  // STEP 5 → Ready
   // ============================================================
   blog('step_5_ready', 'Setting bootstrap_status = ready_for_architect')
   await setStatus(admin, project_id, 'ready_for_architect')
-  await writeLog(admin, project_id, 'ready', 'completed', 'Bootstrap complete â project ready for architect')
+  await writeLog(admin, project_id, 'ready', 'completed', 'Bootstrap complete → project ready for architect')
 
   // ============================================================
   // STEP 6 — Base scaffold (Phase 5)
@@ -558,7 +558,7 @@ export async function POST(request: NextRequest) {
     vercel_url:       vercelDeployUrl,
   })
 
-  // ââ Final DB read for proof âââââââââââââââââââââââââââââââââââââââââââââââ
+  // ── Final DB read for proof ───────────────────────────────────────────────
   const { data: finalProject } = await admin
     .from('projects')
     .select('id, name, bootstrap_status')

@@ -11,6 +11,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { writeAuditLog } from '@/lib/execution'
+import { isDeployGated } from '@/lib/project-health'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -411,6 +412,21 @@ export async function checkGuardrails(
         active_count:     active,
         capacity:         0,
       }
+    }
+  }
+
+  // WS6: Cascade prevention — gate deploy-sensitive tasks when project deploy is unhealthy.
+  // If the current deploy path is broken, dispatching more code-producing tasks
+  // would pile onto an already-broken codebase and worsen the failure cascade.
+  const deployGate = await isDeployGated(admin, projectId)
+  if (deployGate.gated) {
+    console.warn(`[orchestration] WS6 cascade prevention gated for project ${projectId}: ${deployGate.reason}`)
+    return {
+      allowed:          false,
+      reason:           `WS6-CASCADE: ${deployGate.reason}`,
+      budget_remaining: budgetRemaining,
+      active_count:     active,
+      capacity:         0,
     }
   }
 

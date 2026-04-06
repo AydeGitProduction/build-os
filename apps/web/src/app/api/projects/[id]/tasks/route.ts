@@ -33,7 +33,7 @@ export async function GET(
           id, title, slug,
           epic:epics(id, title, slug)
         ),
-        task_runs(id, status, started_at, completed_at)
+        task_runs(id, status, started_at, completed_at, guardian_verdict, commit_sha, qa_override, qa_score)
       `)
       .order('created_at', { ascending: true })
 

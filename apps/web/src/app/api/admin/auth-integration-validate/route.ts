@@ -146,8 +146,9 @@ export async function GET(request: NextRequest) {
   // CHECK 4: GitHub API reachability (using fresh token)
   // ─────────────────────────────────────────────────────────────────────────
   try {
-    const apiRes = await ghFetchWithAuth<{ login?: string; type?: string }>(
-      '/app',
+    // Use /installation/repositories — works with installation tokens (not JWT-only /app)
+    const apiRes = await ghFetchWithAuth<{ total_count?: number }>(
+      '/installation/repositories?per_page=1',
       'GET',
       undefined,
       'validate_api_reachability',
@@ -156,12 +157,12 @@ export async function GET(request: NextRequest) {
       name: 'github_api_reachable',
       passed: apiRes.ok,
       detail: apiRes.ok
-        ? `GitHub App API reachable — status=${apiRes.status}`
-        : `GitHub App API returned HTTP ${apiRes.status}`,
+        ? `GitHub API reachable via installation token — status=${apiRes.status} repos_accessible=${(apiRes.data as { total_count?: number })?.total_count ?? '?'}`
+        : `GitHub API returned HTTP ${apiRes.status}`,
       evidence: {
         status: apiRes.status,
         ok: apiRes.ok,
-        appData: apiRes.ok ? (apiRes.data as { slug?: string })?.slug ?? null : null,
+        totalCount: apiRes.ok ? (apiRes.data as { total_count?: number })?.total_count ?? null : null,
       },
     })
   } catch (err) {

@@ -125,16 +125,6 @@ export async function POST(
       repoInstallationId = (cfg.github_installation_id as string | undefined)
         ?? process.env.PROJECT_GITHUB_INSTALLATION_ID
         ?? process.env.GITHUB_APP_INSTALLATION_ID    // legacy shim only
-
-      // P7.6: Log resolved GitHub config — must NEVER show platform installation (119933236)
-      console.log(
-        `[github-config] path=project owner=${repoOwner} repo=${repoName} ` +
-        `installation_id=${repoInstallationId ?? 'MISSING'} ` +
-        `(source: ${cfg.github_installation_id ? 'deployment_targets.target_config' : process.env.PROJECT_GITHUB_INSTALLATION_ID ? 'PROJECT_GITHUB_INSTALLATION_ID' : 'GITHUB_APP_INSTALLATION_ID(legacy)'})`
-      )
-      if (!repoInstallationId) {
-        console.error('[github-config] CRITICAL: installation_id is null — scaffold will fail. Set PROJECT_GITHUB_INSTALLATION_ID.')
-      }
     }
 
     // ── Generate scaffold files ──────────────────────────────────────────────
@@ -194,8 +184,7 @@ export async function POST(
         files_committed: files.map(f => f.path),
         commit_sha: commitResult.commitSha,
         commit_url: commitResult.commitUrl,
-        // P7.6: repoOwner/repoName always set here (guard at line 137 ensures it)
-        target_repo: `${repoOwner}/${repoName}`,
+        target_repo: repoOwner && repoName ? `${repoOwner}/${repoName}` : 'monorepo-fallback',
       },
     })
 
@@ -207,7 +196,7 @@ export async function POST(
         file_paths: files.map(f => f.path),
         commit_sha: commitResult.commitSha,
         commit_url: commitResult.commitUrl,
-        target_repo: `${repoOwner}/${repoName}`,  // P7.6: never 'monorepo-fallback'
+        target_repo: repoOwner && repoName ? `${repoOwner}/${repoName}` : 'monorepo-fallback',
       }
     })
 
