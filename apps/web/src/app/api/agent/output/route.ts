@@ -46,6 +46,7 @@ import {
   releaseLock,
   writeAuditLog,
   validateAgentOutput,
+  validateOutputTableReferences,
   isValidTransition,
 } from '@/lib/execution'
 
@@ -170,7 +171,7 @@ export async function POST(request: NextRequest) {
     // ── 2. Fetch task + task_run ──────────────────────────────────────────────
     const { data: task, error: taskError } = await admin
       .from('tasks')
-      .select('id, title, status, agent_role, task_type, project_id, feature_id')
+      .select('id, title, status, agent_role, task_type, project_id, feature_id, context_payload')
       .eq('id', task_id)
       .single()
 
@@ -192,6 +193,62 @@ export async function POST(request: NextRequest) {
         await completeIdempotency(admin, idempotencyKey, operation, { error: errors }, false)
         return NextResponse.json(
           { error: 'Invalid agent output schema', details: errors },
+          { status: 422 }
+        )
+      }
+    }
+
+    // ── 3b. P7.9c WS3: Table reference acceptance gate ────────────────────────
+    // Scan executor output for forbidden/hallucinated table names BEFORE writing
+    // to agent_outputs or advancing task state. Bad output is rejected here with
+    // a specific correction message so the retry (WS4) can self-correct.
+    //
+    // This gate fires on ALL successful outputs (not just schema/migration types)
+    // because hallucination can appear in any agent output that mentions tables.
+    if (success && output) {
+      const contextPayload = task.context_payload as Record<string, unknown> | null | undefined
+      const keyTables = contextPayload?.key_tables as string | null | undefined
+      const tableValidation = validateOutputTableReferences(output, keyTables)
+
+      if (!tableValidation.valid) {
+        console.error(
+          `[agent/output] P7.9c WS3 SCHEMA VIOLATION: task=${task_id} ` +
+          `offenders=[${tableValidation.offenders.join(', ')}]`
+        )
+
+        // Mark task as blocked with specific failure_detail + failure_suggestion for WS4 retry
+        await admin
+          .from('tasks')
+          .update({
+            status: 'blocked',
+            failure_detail: `SCHEMA_VIOLATION: Output references forbidden table(s): ${tableValidation.offenders.join(', ')}`,
+            failure_category: 'schema_hallucination',
+            // failure_suggestion is picked up by buildUserMessage() on retry to self-correct
+            failure_suggestion: tableValidation.rejectionMessage,
+          } as Record<string, unknown>)
+          .eq('id', task_id)
+
+        // Update task_run as failed
+        await admin
+          .from('task_runs')
+          .update({ status: 'failed', completed_at: new Date().toISOString() })
+          .eq('id', task_run_id)
+
+        await completeIdempotency(
+          admin, idempotencyKey, operation,
+          { error: 'Schema violation: forbidden table names in output' },
+          false
+        )
+
+        return NextResponse.json(
+          {
+            error: 'Output rejected: schema violation',
+            details: {
+              offenders: tableValidation.offenders,
+              corrections: tableValidation.corrections,
+              rejection_message: tableValidation.rejectionMessage,
+            },
+          },
           { status: 422 }
         )
       }

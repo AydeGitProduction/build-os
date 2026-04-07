@@ -663,24 +663,28 @@ function buildUserMessage(ctx: TaskContext, roleConfig: RoleConfig): string {
   lines.push('- This is a self-building platform — outputs will be used to build the platform itself')
   lines.push('')
 
-  // ── Retry feedback: inject QA failure context so agent can self-correct ──────
-  // If this is a retry (retry_count > 0), show what failed last time.
-  // This is the single most important hint for fixing recurring QA failures.
+  // ── P7.9c WS4: Retry feedback — specific correction, not just count ──────────
+  // If this is a retry (retry_count > 0), show EXACTLY what failed and EXACTLY
+  // what the correct fix is. Vague feedback causes repeat hallucination.
+  // Key improvement: failure_suggestion limit raised to 1200 chars to carry full
+  // table correction detail from validateOutputTableReferences() (WS3 gate).
   if (ctx.retry_count && ctx.retry_count > 0) {
-    lines.push('## ⚠️ RETRY — Previous Attempt Failed')
-    lines.push(`This is attempt ${ctx.retry_count + 1}. The previous attempt was rejected by QA.`)
+    lines.push('## ⚠️ RETRY — Previous Attempt Rejected')
+    lines.push(`This is attempt ${ctx.retry_count + 1}. The previous attempt was REJECTED before it was accepted.`)
     if (ctx.failure_detail) {
       lines.push('')
-      lines.push('**QA Failure reason (you MUST fix this):**')
+      lines.push('**Rejection reason (EXACT — you MUST fix this before anything else):**')
       lines.push(String(ctx.failure_detail).slice(0, 600))
     }
     if (ctx.failure_suggestion) {
       lines.push('')
-      lines.push('**Suggested fix:**')
-      lines.push(String(ctx.failure_suggestion).slice(0, 300))
+      lines.push('**Required correction:**')
+      // WS4: raised from 300 → 1200 chars so full schema correction detail fits
+      lines.push(String(ctx.failure_suggestion).slice(0, 1200))
     }
     lines.push('')
-    lines.push('Fix the identified issue. Do NOT repeat the same mistake.')
+    lines.push('⛔ Do NOT repeat the same mistake. Fix the exact issue described above.')
+    lines.push('⛔ If the correction specifies a table name, use THAT name and no other.')
     lines.push('')
   }
 

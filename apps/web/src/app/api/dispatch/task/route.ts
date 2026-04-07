@@ -36,8 +36,8 @@ import { randomUUID } from 'crypto'
 import { decide as routingDecide, MODEL_IDS } from '@/lib/routing'
 // G4: Stub gate + commit reliability
 import { createStubFile, extractCreatePaths, logCommitDelivery } from '@/lib/commit-reliability'
-// Phase 7.9: Execution lane classifier
-import { classifyTaskWithReason } from '@/lib/execution-classifier'
+// Phase 7.9 / 7.9c WS2: Execution lane classifier + executor subtype
+import { classifyTaskWithReason, classifyTaskFull } from '@/lib/execution-classifier'
 
 export async function POST(request: NextRequest) {
   const admin = createAdminSupabaseClient()
@@ -256,19 +256,25 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // ── Phase 7.9: Classify execution lane ───────────────────────────────────
-    // WS1 + WS2: Determine fast vs heavy lane before creating task_run.
-    // Heavy tasks (test generation, schema migrations, RLS audits) bypass n8n
-    // and route directly to /api/worker/heavy (maxDuration=300s, inline Claude).
-    const laneResult = classifyTaskWithReason({
+    // ── Phase 7.9 / 7.9c WS2: Classify execution lane + executor subtype ────────
+    // P7.9:   fast vs heavy lane (prevents n8n timeout for large LLM jobs)
+    // P7.9c:  executor subtype (prevents wrong runtime → predictable timeout)
+    //
+    // Subtypes:
+    //   worker_schema  → DDL/migration/RLS tasks; must never hit inline timeout
+    //   worker_testgen → test suite generation; large output, schema-aware
+    //   worker_long_llm→ large feature implementation
+    //   worker_inline_safe → bounded heavy task; safe for standard inline worker
+    const fullClassification = classifyTaskFull({
       task_type: task.task_type,
       title: task.title,
       description: task.description,
       // execution_lane column may not exist yet (migration pending) — classify from title/type
     })
-    const executionLane = laneResult.lane
-    const executorUsed  = executionLane === 'heavy' ? 'inline-heavy' : 'n8n'
-    console.log(`[dispatch/task] Lane classification: task=${task.id} lane=${executionLane} reason="${laneResult.reason}"`)
+    const executionLane   = fullClassification.lane
+    const executorSubtype = fullClassification.subtype  // null for fast lane
+    const executorUsed    = executionLane === 'heavy' ? 'inline-heavy' : 'n8n'
+    console.log(`[dispatch/task] Lane classification: task=${task.id} lane=${executionLane} subtype=${executorSubtype ?? 'n/a'} reason="${fullClassification.reason}"`)
 
     // Update task's execution_lane in DB (non-fatal — column may not exist if migration pending)
     try {
@@ -342,44 +348,63 @@ export async function POST(request: NextRequest) {
       `https://${request.headers.get('host')}` ||
       'http://localhost:3000'
 
-    // PERMANENT FIX — n8n cloud timeout prevention (ERT-P3 systemic fix)
-    // Full context_payload from 9-field Task Contracts is 3000–4500 tokens.
-    // When passed to n8n + Claude API with max_tokens=8192, n8n cloud times out
-    // at ~300–600s before Claude responds. This truncation reduces payload to
-    // ~900 chars maximum, preventing ALL future dispatch timeouts regardless of
-    // task contract size. Applied here at the dispatch layer so no task, phase,
-    // or workstream can ever cause a timeout by having a large context_payload.
-    function buildTruncatedContextPayload(cp: Record<string, unknown> | null | undefined): string {
-      if (!cp || typeof cp !== 'object') return ''
-      const parts: string[] = []
+    // P7.9c WS1 — Schema-Preserving Context Payload (replaces ERT-P3 string truncation)
+    //
+    // ROOT CAUSE FIXED: The previous buildTruncatedContextPayload() converted the
+    // context_payload object into a plain string (≤900 chars). This destroyed the
+    // structured shape — when /api/agent/execute received it and checked
+    // payload?.key_tables, it got undefined because the string has no properties.
+    // The ⛔ SCHEMA CONTRACT block at the top of every agent prompt NEVER FIRED.
+    // Result: agents hallucinated table names (heavy_jobs instead of heavy_dispatch_queue).
+    //
+    // FIX: Return a structured object that ALWAYS preserves schema-critical fields
+    // (key_tables, table) as top-level properties. Text-heavy fields are still
+    // truncated to prevent timeout, but the schema contract survives dispatch.
+    function buildTruncatedContextPayload(cp: Record<string, unknown> | null | undefined): Record<string, unknown> {
+      if (!cp || typeof cp !== 'object') return {}
+      const result: Record<string, unknown> = {}
 
-      // ERT metadata
-      if (cp.ert_phase) parts.push(`Phase: ${cp.ert_phase}`)
-      if (cp.task_id) parts.push(`Task: ${cp.task_id}`)
+      // ── SCHEMA CONTRACT FIELDS — preserved as-is, never truncated ─────────────
+      // These are the only fields the executor MUST see to obey schema contracts.
+      // key_tables: comma-separated list of allowed DB tables for this task
+      // table:      canonical table name if a single table is the focus
+      if (cp.key_tables !== undefined) result.key_tables = cp.key_tables
+      if (cp.table !== undefined) result.table = cp.table
 
-      // Task Contract fields (truncated)
+      // ── ERT metadata ──────────────────────────────────────────────────────────
+      if (cp.ert_phase) result.ert_phase = cp.ert_phase
+      if (cp.task_id) result.task_id = cp.task_id
+
+      // ── Task Contract fields (truncated for size, but structured) ─────────────
       const tc = cp.task_contract as Record<string, unknown> | undefined
       if (tc) {
-        if (tc.objective) parts.push(`Objective: ${String(tc.objective).slice(0, 300)}`)
+        const contract: Record<string, unknown> = {}
+        if (tc.objective) contract.objective = String(tc.objective).slice(0, 300)
         const plan = tc.implementation_plan as string[] | undefined
         if (Array.isArray(plan) && plan.length > 0) {
-          const steps = plan.slice(0, 3).map((s, i) => `${i + 1}. ${String(s).slice(0, 100)}`).join(' ')
-          parts.push(`Plan: ${steps}`)
+          contract.implementation_plan = plan.slice(0, 3).map(s => String(s).slice(0, 100))
         }
-        if (tc.expected_output) parts.push(`Output: ${String(tc.expected_output).slice(0, 200)}`)
+        if (tc.expected_output) contract.expected_output = String(tc.expected_output).slice(0, 200)
         if (tc.acceptance_criteria) {
-          const ac = Array.isArray(tc.acceptance_criteria)
-            ? tc.acceptance_criteria.slice(0, 2).join('; ')
-            : String(tc.acceptance_criteria)
-          parts.push(`Criteria: ${ac.slice(0, 200)}`)
+          contract.acceptance_criteria = Array.isArray(tc.acceptance_criteria)
+            ? tc.acceptance_criteria.slice(0, 2)
+            : String(tc.acceptance_criteria).slice(0, 200)
         }
-      } else {
-        // Non-ERT tasks: stringify and cap
-        const raw = JSON.stringify(cp)
-        parts.push(raw.slice(0, 800))
+        // key_tables may also live inside task_contract — hoist to top level
+        if (tc.key_tables !== undefined && result.key_tables === undefined) {
+          result.key_tables = tc.key_tables
+        }
+        result.task_contract = contract
       }
 
-      return parts.join('\n').slice(0, 900)
+      // ── Other non-critical scalar fields ──────────────────────────────────────
+      if (cp.source) result.source = cp.source
+      if (cp.phase) result.phase = cp.phase
+      if (cp.epic_title) result.epic_title = String(cp.epic_title).slice(0, 100)
+      if (cp.feature_title) result.feature_title = String(cp.feature_title).slice(0, 100)
+      if (cp.objective && !result.task_contract) result.objective = String(cp.objective).slice(0, 300)
+
+      return result
     }
 
     // ERT-P6C: routing engine provides model_id — HARD SWITCH
@@ -435,16 +460,26 @@ export async function POST(request: NextRequest) {
     const qaWebhookUrl          = process.env.N8N_QA_WEBHOOK_URL
     const dispatchWebhookUrl    = process.env.N8N_DISPATCH_WEBHOOK_URL
 
-    // ── Phase 7.9 WS2: Route heavy tasks to inline worker ────────────────────
+    // ── Phase 7.9 / 7.9c WS2: Route tasks by lane + executor subtype ────────────
     // STRICT: heavy tasks NEVER go to n8n (which times out for large LLM jobs).
-    // Heavy tasks → /api/worker/heavy (maxDuration=300s, direct Claude call).
-    // Fast tasks  → N8N_DISPATCH_WEBHOOK_URL (existing path, unchanged).
+    //
+    // Executor subtype routing within the heavy lane (P7.9c WS2):
+    //   worker_schema    → /api/worker/heavy?subtype=schema   (schema synthesis, DDL, RLS)
+    //   worker_testgen   → /api/worker/heavy?subtype=testgen  (test suite generation)
+    //   worker_long_llm  → /api/worker/heavy?subtype=long_llm (large feature code)
+    //   worker_inline_safe → /api/worker/heavy (default, no subtype param)
+    //
+    // The ?subtype= param lets /api/worker/heavy adjust Claude model/max_tokens if needed.
+    // Fast tasks → N8N_DISPATCH_WEBHOOK_URL (n8n, standard path, unchanged).
     let targetWebhookUrl: string | null = null
     if (executionLane === 'heavy') {
-      // Heavy lane: route to inline worker endpoint (no n8n intermediary)
-      const heavyWorkerUrl = process.env.HEAVY_WORKER_URL || `${appUrl}/api/worker/heavy`
-      targetWebhookUrl = heavyWorkerUrl
-      console.log(`[dispatch/task] HEAVY lane: routing to inline worker ${heavyWorkerUrl} (task=${task.id})`)
+      const heavyWorkerBase = process.env.HEAVY_WORKER_URL || `${appUrl}/api/worker/heavy`
+      // Attach subtype as query param so the worker can route internally
+      const subtypeParam = executorSubtype && executorSubtype !== 'worker_inline_safe'
+        ? `?subtype=${executorSubtype.replace('worker_', '')}`
+        : ''
+      targetWebhookUrl = `${heavyWorkerBase}${subtypeParam}`
+      console.log(`[dispatch/task] HEAVY lane: subtype=${executorSubtype ?? 'inline_safe'} → ${targetWebhookUrl} (task=${task.id})`)
     } else if (dispatchWebhookUrl) {
       // Fast lane: standard n8n dispatch
       targetWebhookUrl = dispatchWebhookUrl

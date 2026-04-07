@@ -289,6 +289,89 @@ export function validateAgentOutput(
   return { valid: errors.length === 0, errors }
 }
 
+// ─── P7.9c WS3: Output Table Reference Validator ────────────────────────────
+//
+// Validates that executor output does not reference forbidden/hallucinated table
+// names BEFORE the output is accepted into the flow. This is the acceptance gate
+// described in P7.9c WS3 — it fires before agent_outputs is written and before
+// task.status is advanced.
+//
+// FORBIDDEN_TABLE_MAP: maps hallucinated names → canonical replacements.
+// Extend this list as new hallucination patterns are discovered.
+export const FORBIDDEN_TABLE_MAP: Record<string, string> = {
+  heavy_jobs:          'heavy_dispatch_queue',
+  agent_runs:          'task_runs',
+  agent_jobs:          'heavy_dispatch_queue',
+  dispatch_queue:      'heavy_dispatch_queue',
+  task_queue:          'heavy_dispatch_queue',
+  job_queue:           'heavy_dispatch_queue',
+  execution_queue:     'heavy_dispatch_queue',
+  workflow_queue:      'heavy_dispatch_queue',
+}
+
+export interface TableValidationResult {
+  valid: boolean
+  /** Offending table name(s) found in the output */
+  offenders: string[]
+  /** For each offender: the canonical replacement name */
+  corrections: Record<string, string>
+  /** Human-readable rejection message for retry feedback */
+  rejectionMessage: string
+}
+
+/**
+ * P7.9c WS3: Scan executor output for forbidden (hallucinated) table names.
+ *
+ * @param output    - The raw output object from the executor
+ * @param keyTables - Comma-separated canonical table names (from context_payload.key_tables)
+ *                    If provided, any table name NOT in this list is also flagged.
+ * @returns TableValidationResult
+ */
+export function validateOutputTableReferences(
+  output: unknown,
+  keyTables?: string | null
+): TableValidationResult {
+  // Stringify the entire output for scanning
+  const raw = typeof output === 'string' ? output : JSON.stringify(output ?? '')
+
+  const offenders: string[] = []
+  const corrections: Record<string, string> = {}
+
+  // Check against known forbidden table map
+  for (const [forbidden, canonical] of Object.entries(FORBIDDEN_TABLE_MAP)) {
+    // Match as whole word to avoid false positives (e.g. "heavy_jobs_v2" vs "heavy_jobs")
+    const pattern = new RegExp(`\\b${forbidden}\\b`, 'gi')
+    if (pattern.test(raw)) {
+      if (!offenders.includes(forbidden)) {
+        offenders.push(forbidden)
+        corrections[forbidden] = canonical
+      }
+    }
+  }
+
+  if (offenders.length === 0) {
+    return { valid: true, offenders: [], corrections: {}, rejectionMessage: '' }
+  }
+
+  // Build specific rejection message for retry feedback (WS4)
+  const correctionLines = offenders
+    .map(o => `  ✗ "${o}" → use "${corrections[o]}" instead`)
+    .join('\n')
+
+  const canonicalHint = keyTables
+    ? `\nAllowed tables (from key_tables contract): ${keyTables}`
+    : ''
+
+  const rejectionMessage =
+    `[SCHEMA_VIOLATION] Output references forbidden table name(s):\n` +
+    correctionLines +
+    canonicalHint +
+    `\n\nThis output is REJECTED (QA RULE-27). The next attempt MUST use only the canonical table names listed above.` +
+    ` Do NOT invent alternate names. Do NOT guess. If the canonical name is unclear, use the key_tables list.`
+
+  return { valid: false, offenders, corrections, rejectionMessage }
+}
+
 // ─── Task Run State Machine ───────────────────────────────────────────────────
 //
 // SHADOW MODE NOTE:
